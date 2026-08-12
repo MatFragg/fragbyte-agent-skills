@@ -24,7 +24,7 @@ Apply this whenever you model a domain or write code around business logic. Foll
 | You're designing from scratch and need to pick a starting point | This file |
 | You need to discover the domain with business experts | `strategic-design.md` and `domain-modeling.md` |
 | You're modeling entities, aggregates, or invariants inside a single context | `tactical-patterns.md` |
-  | You're writing Java/Spring Boot code | `spring-boot.md` |
+| You're writing Java/Spring Boot code | `spring-boot.md` |
 | You're writing Angular/TypeScript code | `angular.md` |
 | You're looking up design patterns and their DDD equivalents | `design-patterns-arch-patterns.md` |
 
