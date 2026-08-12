@@ -17,7 +17,6 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this ski
 
 ### Changed
 - `tactical-patterns.md`: Removed all embedded code examples; replaced with conceptual summaries. Testing guidance kept inline. Updated quick-reference table from stack-specific idioms to design rules.
-- `angular.md`: Changed example domain from QuickBite to CargoRoute for consistency with the rest of the skill.
 - Folder renamed from `ddd-guideliness-v1` to `ddd-guideliness`.
 
 ### Fixed
