@@ -12,6 +12,7 @@ Read this when you're implementing DDD and need to map DDD concepts to well-know
   - [Observer](#observer)
 - [Structure patterns](#structure-patterns)
   - [Facade](#facade)
+  - [Marker Interface](#marker-interface)
 - [Enterprise patterns](#enterprise-patterns)
   - [Service Layer](#service-layer)
   - [Repository](#repository)
@@ -21,6 +22,7 @@ Read this when you're implementing DDD and need to map DDD concepts to well-know
 - [Architectural patterns](#architectural-patterns)
   - [CQRS](#cqrs)
   - [Layered Architecture](#layered-architecture)
+  - [Ports & Adapters](#ports--adapters)
 - [Pattern decision tree](#pattern-decision-tree)
 - [Pattern-to-concept cross-reference](#pattern-to-concept-cross-reference)
 
@@ -191,7 +193,53 @@ The facade returns primitives and simple DTOs — never CargoRoute's domain type
 
 Without facades, PortOps injects `BookingRepository` directly. When we refactor `Booking` to split cargo details into a separate entity, PortOps breaks. The ACL (via facade) isolates the model change.
 
+#### Bidirectional facades in a monolith
+
+Two bounded contexts can define facades that the other consumes (e.g., Booking calls `VesselSchedulingFacade`, and VesselScheduling calls `BookingContextFacade`). This bidirectional dependency is acceptable when:
+
+- Dependencies are to interfaces, not implementations.
+- Each context controls its own facade.
+- Communication is synchronous and in-process.
+
+In microservices, these facade interfaces become HTTP/gRPC clients — the interface contract stays, the adapter changes from in-process to network call.
+
 ---
+
+### Marker Interface
+
+- **When:** A single class needs to satisfy two interface contracts that share method signatures, and the DI framework cannot disambiguate.
+- **Benefit:** Explicit — the marker interface declares "this bean serves both roles." Consumers depend on the port only; the framework interface detail stays in infrastructure.
+- **Failure mode:** Using `@Primary` hides the ambiguity; using `@Qualifier` couples consumers to implementation names.
+
+#### CargoRoute example
+
+`HashingService` (port) defines `encode` and `matches`. Spring Security's `PasswordEncoder` declares the same methods. A marker interface unifies both contracts:
+
+```
+HashingService                    ← port (domain-agnostic)
+    ↑ extends
+BCryptHashingService              ← marker interface (extends port + PasswordEncoder)
+    ↑ implements
+HashingServiceImpl                ← concrete adapter
+```
+
+```java
+public interface BcryptHashingService extends HashingService, PasswordEncoder { }
+```
+
+This zero-method interface tells Spring: "this bean is both the domain port and the framework contract." Consumers ask for `HashingService`. The `PasswordEncoder` detail stays in infrastructure.
+
+#### Why not the alternatives
+
+| Alternative | Problem |
+|---|---|
+| `@Primary` | Hides the problem — the wrong bean might win silently |
+| `@Qualifier("bcrypt")` | Couples every injection site to a magic string |
+| `@Qualifier` + constants | More boilerplate than the marker interface, same coupling |
+
+#### Decision rule
+
+Use marker interfaces when a port and a framework interface have overlapping method names. Do not use them as a general DI strategy — they exist to solve a specific ambiguity, not to replace `@Qualifier` everywhere.
 
 ## Enterprise patterns
 
@@ -450,6 +498,57 @@ com.cargoroute.booking/
 
 ---
 
+### Ports & Adapters
+
+- **When:** You need to isolate your domain from external technologies (persistence, messaging, external APIs) while keeping the door open to swap implementations.
+- **Benefit:** The domain defines what it needs (ports); infrastructure provides how (adapters). Technology changes don't touch business logic.
+- **Failure mode:** Domain directly depending on framework types — can't test without the framework, can't swap technologies without touching business code.
+
+#### The pattern
+
+Ports are interfaces declared by the domain or application layer. Adapters are implementations in infrastructure. The dependency rule ensures infrastructure depends on the domain, never the reverse.
+
+```
+Domain/Application                     Infrastructure
+┌──────────────────┐                   ┌──────────────────────┐
+│ Port interface   │ ←── implements ── │ Adapter class        │
+│ (BookingRepository│                   │ (JpaBookingRepository)│
+│  HashingService)  │                   │ (BCryptHashingService)│
+└──────────────────┘                   └──────────────────────┘
+```
+
+#### CargoRoute example
+
+```
+Domain:
+  BookingRepository          ← port (interface)
+  HashingService             ← port (interface)
+
+Infrastructure:
+  JpaBookingRepository       ← adapter (extends JpaRepository + port)
+  BCryptHashingService       ← marker interface (extends port + Spring interface)
+  HashingServiceImpl         ← adapter (implements marker interface)
+```
+
+The application layer depends only on the port. Swapping BCrypt for Argon2 means adding a new adapter — no application code changes.
+
+#### Tactical naming convention
+
+Name artifacts by their **functional responsibility** (`HashingService`), not by their pattern role (`IHashingPort`). The package structure reveals the architectural role:
+
+```
+application/internal/outboundservices/hashing/HashingService.java   ← port
+infrastructure/hashing/bcrypt/BcryptHashingService.java            ← adapter
+```
+
+A developer reading `HashingService` understands the intent immediately. The `infrastructure/hashing/bcrypt/` path tells you it's an adapter without needing it in the name.
+
+#### When to skip
+
+When the repository has no business logic and Spring Data IS the abstraction (direct injection is correct — YAGNI). Adding a domain port for a simple CRUD repository is over-engineering. Introduce the port when business rules enter the query, or when multi-database support is actually needed.
+
+---
+
 ## Pattern decision tree
 
 When you're modeling and don't know which pattern to reach for:
@@ -479,6 +578,12 @@ Do you have cross-aggregate coordination?
 
 Do you need to persist/retrieve an aggregate by identity?
   → Repository (interface in domain, impl in infrastructure)
+
+Do you need to isolate external technologies from your domain?
+  → Ports & Adapters (port interface in domain/application, adapter in infrastructure)
+
+Does a port and a framework interface share method names, causing DI ambiguity?
+  → Marker Interface (extends both contracts, zero-method interface)
 
 Are you transferring data over the network without exposing domain internals?
   → Resource/DTO (in interfaces layer)
@@ -513,6 +618,8 @@ Are technical concerns (web, persistence, external services) leaking into the do
 | Cross-context access | Facade (ACL) | `BookingContextFacade` consumed by PortOps |
 | Cross-aggregate coordination | Service Layer | `BookingCommandServiceImpl` orchestrates create + feasibility + save |
 | Persist/retrieve aggregate | Repository | `BookingRepository.findByBookingNumber()` |
+| External technology isolation | Ports & Adapters | `BookingRepository` (port) → `JpaBookingRepository` (adapter) |
+| DI ambiguity resolution | Marker Interface | `BcryptHashingService extends HashingService, PasswordEncoder` |
 | Network transfer | Resource/DTO | `BookingResource`, `PlaceBookingResource` |
 | Translate between layers | Mapper/Assembler | `BookingResourceFromEntityAssembler` |
 | Atomic multi-step operation | Unit of Work | Transactional boundary on the orchestrator |

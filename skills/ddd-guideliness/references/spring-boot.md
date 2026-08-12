@@ -13,11 +13,13 @@ Works on Spring Boot 3.x with Java 17+. Persistence annotations live in `jakarta
 - [Commands and queries](#commands-and-queries)
 - [Command and query services](#command-and-query-services)
 - [Repositories](#repositories)
+- [Outbound services](#outbound-services)
+- [Marker interfaces for Spring DI](#marker-interfaces-for-spring-di)
 - [Domain events](#domain-events)
 - [Anti-corruption layer](#anti-corruption-layer)
 - [Interfaces (REST)](#interfaces-rest)
 - [Domain exceptions and error handling](#domain-exceptions-and-error-handling)
-- [Identity and persistence: choices](#identity-and-persistence-choices)
+- [Identity and persistence: preferences](#identity-and-persistence-preferences)
 - [Testing each layer](#testing-each-layer)
 - [Common pitfalls](#common-pitfalls)
 - [Quick reference](#quick-reference)
@@ -28,37 +30,46 @@ Give each **bounded context** its own package, split into four layers, with depe
 
 ```
 com.cargoroute.booking
-├── interfaces                     // inbound adaptors — the outside drives the context
+├── interfaces                         // inbound adaptors — the outside drives the context
 │   ├── rest
-│   │   ├── controllers            // REST controllers
-│   │   ├── resources              // request/response DTOs (records)
-│   │   └── transform              // assemblers: resource <-> command / entity
-│   └── acl                          // facade this context exposes to other contexts
-├── application                    // use-case orchestration (no business rules)
-│   ├── acl                          // this context's facade implementation
+│   │   ├── controllers                // REST controllers
+│   │   ├── resources                  // request/response DTOs (records)
+│   │   ├── transform                  // assemblers: resource <-> command / entity
+│   │   └── advice                     // optional: BC-scoped exception handler
+│   └── acl                            // facade interface this context exposes to other contexts
+├── application                        // use-case orchestration (no business rules)
+│   ├── acl                            // this context's facade implementation
 │   └── internal
-│       ├── commandservices          // command service implementations
-│       ├── queryservices            // query service implementations
-│       └── eventhandlers            // react to domain events
-├── domain                         // the domain model + its ports (depends on nothing)
+│       ├── commandservices            // command service implementations
+│       ├── queryservices              // query service implementations
+│       ├── eventhandlers              // react to domain events
+│       └── outboundservices           // outbound ports (optional — only when context calls out)
+│           ├── {concept}/             // technology port per concept (hashing/, tokens/, llm/)
+│           │   └── {Concept}Service.java
+│           └── acl/
+│               └── External{BC}Service.java  // calls another context's facade
+├── domain                             // the domain model + its ports (depends on nothing)
 │   ├── model
 │   │   ├── aggregates
 │   │   ├── valueobjects
-│   │   ├── commands                 // command types (domain)
-│   │   ├── queries                  // query types (domain)
-│   │   └── events                   // domain events
-│   ├── services                     // command/query service interfaces (ports)
-│   └── exceptions                   // domain-specific exceptions
-└── infrastructure                 // outbound adaptors — the context reaches out
-    └── persistence
-        └── jpa
-            └── repositories         // Spring Data repositories
+│   │   ├── commands                   // command types (domain)
+│   │   ├── queries                    // query types (domain)
+│   │   └── events                     // domain events
+│   ├── services                       // command/query service interfaces (ports)
+│   └── exceptions                     // domain-specific exceptions
+└── infrastructure                     // outbound adaptors — the context reaches out
+    ├── persistence
+    │   └── jpa
+    │       └── repositories           // Spring Data repositories
+    └── {technology}/                  // technology-specific adapters
+        └── {implementation}/          // e.g., bcrypt/, jwt/, sfs/, anthropic/
+            └── services/              // marker interface + impl class
 ```
 
-- **`interfaces`** — inbound adaptors. REST controllers, listeners, CLI. They translate external input into application calls. No business logic.
-- **`application`** — application services. They orchestrate use cases: load aggregates, invoke behavior, manage transactions. Coordinate, hold no business rules.
+- **`interfaces`** — inbound adaptors. REST controllers, listeners, CLI. They translate external input into application calls. No business logic. The `acl/` subpackage holds the facade interface this context publishes for others.
+- **`application`** — application services. They orchestrate use cases: load aggregates, invoke behavior, manage transactions. Coordinate, hold no business rules. The `outboundservices/` subpackage holds technology-agnostic port interfaces — concept subpackages (`hashing/`, `tokens/`, `llm/`) for external dependencies, and `acl/` exclusively for `External{BC}Service` classes that call other contexts' facades.
 - **`domain`** — the model. Aggregates, value objects, domain events, service *interfaces* (ports), exceptions. Every business rule lives here.
-- **`infrastructure`** — outbound adaptors. Repositories, message publishers, external API clients. They implement ports.
+- **`infrastructure`** — outbound adaptors. Repositories, external API clients, framework integrations. Follows the `infrastructure/{technology}/{implementation}/` pattern (e.g., `infrastructure/hashing/bcrypt/`, `infrastructure/authorization/sfs/`).
 
 ## The shared kernel
 
@@ -371,6 +382,110 @@ public interface BookingRepository extends JpaRepository<Booking, Long>,
 >
 > Prefer this when isolating the domain matters. The cost is one extra interface.
 
+### When to inject the repository directly
+
+In a modular monolith with DDD, injecting the repository directly (without a domain port) is correct when:
+
+1. **No business rules in the repository.** It only offers standard finders (`findByXxx`, `existsByXxx`) and the inherited `JpaRepository` methods. There is no domain logic to protect.
+2. **YAGNI.** Adding a port interface "just in case" you migrate databases later is over-engineering. Introduce it when the migration actually happens.
+3. **The `@Entity` IS the aggregate root.** There is no separate domain model and persistence model — JPA annotations and domain behavior live on the same class. The repository is a detail of persistence, not a domain concept.
+4. **Spring Data JPA IS the abstraction.** `JpaRepository` already abstracts over Hibernate and the database provider. Adding another layer of indirection does not buy testability — Mockito mocks the repository interface just as easily either way.
+
+**When to add a port:** if the repository starts encapsulating business rules (e.g., complex queries with domain invariants), if the team decides to support multiple databases simultaneously, or if testability demands a domain-level contract.
+
+## Outbound services
+
+When a bounded context calls an external technology (hashing, tokens, payments, LLMs, email), define a **technology-agnostic port interface** in the application layer and implement it in infrastructure.
+
+```text
+application/internal/outboundservices/{concept}/     → Port interface
+infrastructure/{technology}/{implementation}/        → Marker interface + adapter
+```
+
+**Rules:**
+
+1. The port interface must be technology-agnostic — no framework imports.
+2. Multiple implementations of the same port are allowed (strategy pattern).
+3. The marker interface extends the port and may add technology-specific methods.
+4. The actual implementation class has an `Impl` suffix.
+
+### CargoRoute example: hashing service
+
+```text
+application/internal/outboundservices/hashing/
+  └── HashingService.java                  ← port (interface)
+
+infrastructure/hashing/bcrypt/
+  ├── BcryptHashingService.java            ← marker interface
+  └── services/
+      └── HashingServiceImpl.java          ← implementation
+```
+
+```java
+// Port — technology-agnostic
+public interface HashingService {
+    String encode(String rawPassword);
+    boolean matches(String rawPassword, String encodedPassword);
+}
+
+// Marker interface — extends port + Spring framework interface
+public interface BcryptHashingService extends HashingService, PasswordEncoder { }
+
+// Implementation
+@Service
+public class HashingServiceImpl implements BcryptHashingService {
+    private final PasswordEncoder delegate = new BCryptPasswordEncoder();
+
+    @Override
+    public String encode(String rawPassword) {
+        return delegate.encode(rawPassword);
+    }
+
+    @Override
+    public boolean matches(String rawPassword, String encodedPassword) {
+        return delegate.matches(rawPassword, encodedPassword);
+    }
+}
+```
+
+The application layer depends on `HashingService` (the port). The infrastructure detail (BCrypt, Spring Security's `PasswordEncoder`) stays behind the marker interface. Swapping to Argon2 means adding a new `infrastructure/hashing/argon2/` package — no application code changes.
+
+**When to skip:** if the external dependency is a thin wrapper with no swappability (e.g., a simple utility), injecting it directly is fine. The port adds value when the technology is likely to change or when testing requires a mock boundary.
+
+## Marker interfaces for Spring DI
+
+When a port interface and a Spring framework interface share method names, Spring cannot disambiguate which bean to inject. A **marker interface** — a zero-method interface that extends both — resolves this cleanly.
+
+### The problem
+
+`HashingService` (port) declares `encode` and `matches`. Spring Security's `PasswordEncoder` declares the same methods. If `HashingServiceImpl` implements `HashingService` directly, Spring cannot inject it where `PasswordEncoder` is needed:
+
+```java
+// Ambiguous — which bean?
+@Bean
+public PasswordEncoder passwordEncoder() { ... }
+```
+
+### The solution
+
+```java
+public interface BcryptHashingService extends HashingService, PasswordEncoder { }
+```
+
+This marker interface tells Spring: "this bean serves both roles." `HashingServiceImpl` implements `BcryptHashingService`, and Spring can inject it wherever either `HashingService` or `PasswordEncoder` is requested.
+
+### Why not the alternatives
+
+| Alternative | Problem |
+|---|---|
+| `@Primary` | Hides the ambiguity instead of solving it — the wrong bean might win silently |
+| `@Qualifier("bcrypt")` | Couples consumers to a magic string — now every injection site must know the implementation name |
+| `@Qualifier` + constants | More boilerplate than the marker interface, same coupling |
+
+The marker interface is explicit: whoever reads `BcryptHashingService` understands it unifies two contracts. Consumers ask for `HashingService`; the implementation detail stays in infrastructure.
+
+The same pattern applies to any port with a framework-aligned interface — e.g., `BearerTokenService extends TokenService` when the token implementation also satisfies Spring's token contract.
+
 ## Domain events
 
 Model each event as a class extending Spring's `ApplicationEvent`, named in past tense:
@@ -426,6 +541,85 @@ public class ExternalVesselService {
     }
 }
 ```
+
+### Outbound vs inbound ACL
+
+- **Outbound (this context consumes):** The consumer defines the facade interface in `interfaces/acl/`. The provider implements it in `application/acl/`. The consumer's `External{BC}Service` (in `application/internal/outboundservices/acl/`) is the only class that injects the facade. All other application code delegates to it.
+- **Inbound (this context exposes):** Define the facade interface in `interfaces/acl/`. Implement it in `application/acl/`. Other contexts depend on this interface — never on your repositories, aggregates, or internal services.
+
+### Bidirectional ACL in a monolith
+
+Two bounded contexts can define facades that the other consumes:
+
+```text
+Booking → ExternalVesselService → VesselSchedulingFacade
+VesselScheduling → ExternalBookingService → BookingContextFacade
+```
+
+This bidirectional dependency is acceptable in a monolith when:
+
+- Dependencies are to interfaces, not implementations.
+- Each context controls its own facade.
+- Communication is synchronous and in-process.
+
+In microservices, these facade interfaces become HTTP/gRPC clients — the interface stays, the adapter changes.
+
+### Cross-context reference data
+
+Some contexts need **read-only data** owned by another context to enrich their responses (e.g., Booking shows the vessel name; Tracking shows the port address). Apply this pattern:
+
+1. **Provider VO:** The provider defines a simple record in `domain/model/valueobjects/` (e.g., `VesselInfo`). If the VO is used by 3+ bounded contexts, place it in `shared/domain/model/valueobjects/`.
+2. **Facade returns the VO:** The provider's `XxxContextFacade` returns the VO directly, or returns primitives when only a single field is needed.
+3. **Consumer mapping:** The consumer's `ExternalXxxService` (in `application/internal/outboundservices/acl/`) calls the facade. If the consumer needs only a subset of fields, it maps to its own minimal VO in `domain/model/valueobjects/`.
+4. **No domain services:** Non-aggregate reference data does NOT get its own service interface in `domain/services/`. The `ExternalXxxService` is an application-layer service, not a domain service.
+
+**Primitives (single field needed):**
+
+```java
+// Provider: VesselSchedulingFacade
+Optional<String> fetchVesselName(String voyageNumber);
+
+// Consumer: ExternalVesselService
+String fetchVesselName(String voyageNumber) {
+    return vesselSchedulingFacade.fetchVesselName(voyageNumber).orElse("");
+}
+```
+
+**Provider VO → Consumer minimal VO (multiple fields needed):**
+
+```java
+// Provider: domain/model/valueobjects/VesselInfo.java
+public record VesselInfo(String id, String name, String imoNumber, boolean active) {}
+
+// Provider: VesselSchedulingFacade
+VesselInfo fetchVesselInfo(String vesselId);
+
+// Consumer: domain/model/valueobjects/VesselBookingInfo.java
+public record VesselBookingInfo(String vesselId, String name, String imoNumber) {}
+
+// Consumer: ExternalVesselService
+VesselBookingInfo fetchVesselBookingInfo(String vesselId) {
+    VesselInfo info = vesselSchedulingFacade.fetchVesselInfo(vesselId);
+    return new VesselBookingInfo(info.id(), info.name(), info.imoNumber());
+}
+```
+
+**Shared VO (used by 3+ contexts):**
+
+```java
+// shared/domain/model/valueobjects/VoyageContext.java
+public record VoyageContext(String voyageNumber, String vesselId, String routeId) {}
+
+// Provider: VesselSchedulingFacade
+VoyageContext fetchVoyageContext(String voyageNumber);
+
+// Consumer: ExternalVesselService
+VoyageContext fetchVoyageContext(String voyageNumber) {
+    return vesselSchedulingFacade.fetchVoyageContext(voyageNumber);
+}
+```
+
+This keeps a single point of access per external context. When moving to microservices, the `ExternalXxxService` becomes an HTTP client while the VOs stay unchanged.
 
 ## Interfaces (REST)
 
@@ -520,6 +714,28 @@ class GlobalExceptionHandler {
 }
 ```
 
+### BC-scoped exception handling
+
+A **global** handler in `shared/` maps common exceptions (`ResourceNotFoundException`, `ForbiddenException`, `IllegalArgumentException`). A **BC-specific** handler maps exceptions unique to that context:
+
+```java
+// booking/interfaces/rest/advice/BookingExceptionHandler.java
+@RestControllerAdvice(basePackages = "com.cargoroute.booking.interfaces.rest")
+class BookingExceptionHandler {
+    @ExceptionHandler(VesselFullException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ErrorResponse handle(VesselFullException ex) {
+        return ErrorResponse.create(ex, HttpStatus.CONFLICT, ex.getMessage());
+    }
+}
+```
+
+**Rules:**
+
+- Never redefine shared kernel exceptions in a bounded context.
+- BC-scoped handlers import from `shared.domain.exceptions`.
+- Only create BC-specific exceptions when the semantic meaning differs from existing shared exceptions.
+
 ## Identity and persistence: preferences
 
 - **Identity.** Three approaches, in order of recommendation:
@@ -563,5 +779,8 @@ A domain test that needs `@SpringBootTest` to pass is usually a sign business lo
 | Event handler | `@Service` with `@EventListener` / `@TransactionalEventListener` |
 | Command / Query | `record` in `domain/model/commands` or `queries` |
 | Command/Query Service | Interface in `domain/services`, impl in `application/internal/...` |
-| Anti-corruption layer | Facade interface (`interfaces/acl`) + outbound service |
+| Anti-corruption layer | Facade interface (`interfaces/acl`) + outbound service (`outboundservices/acl/External{BC}Service`) |
+| Outbound service (tech port) | Interface in `outboundservices/{concept}/`, adapter in `infrastructure/{tech}/{impl}/` |
+| Marker interface | Extends port + framework interface (e.g., `BcryptHashingService extends HashingService, PasswordEncoder`) |
 | Domain exception | `RuntimeException` subclass in `domain/exceptions`, mapped by `@RestControllerAdvice` |
+| BC-scoped exception handler | `@RestControllerAdvice(basePackages = "...interfaces.rest")` in `{context}/interfaces/rest/advice/` |
