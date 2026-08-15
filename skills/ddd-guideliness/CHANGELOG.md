@@ -37,3 +37,9 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this ski
 - `design-patterns-arch-patterns.md`: New "Marker Interface" structural pattern — when/benefit/failure, CargoRoute example, decision rule.
 - `design-patterns-arch-patterns.md`: Enhanced "Facade" pattern with bidirectional facades in monoliths and microservice migration note.
 - `design-patterns-arch-patterns.md`: Pattern decision tree and cross-reference table updated with Ports & Adapters and Marker Interface.
+
+## [1.0.2] — 2026-08-14
+
+### Changed
+- `angular.md`: Added guidance for keeping API base URLs in environment configuration and moving repeated literals into exported constants or enums.
+- `angular.md`: Updated the endpoint/context API examples to use central constants for endpoint fragments instead of inline magic strings.

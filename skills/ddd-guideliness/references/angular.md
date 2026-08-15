@@ -127,7 +127,15 @@ Model the domain as **classes** named in the ubiquitous language. Each entity li
 // tracking/domain/model/shipment.entity.ts
 import { BaseEntity } from '../../../shared/domain/model/base-entity';
 
-export type ShipmentStatus = 'BOOKED' | 'CONFIRMED' | 'IN_TRANSIT' | 'DELIVERED' | 'CANCELED';
+export const ShipmentStatus = {
+  BOOKED: 'BOOKED',
+  CONFIRMED: 'CONFIRMED',
+  IN_TRANSIT: 'IN_TRANSIT',
+  DELIVERED: 'DELIVERED',
+  CANCELED: 'CANCELED',
+} as const;
+
+export type ShipmentStatus = typeof ShipmentStatus[keyof typeof ShipmentStatus];
 
 export class Shipment implements BaseEntity {
   private _id: number;
@@ -184,6 +192,14 @@ export class CancelTrackingCommand {
 ## Infrastructure: DTOs, assemblers, endpoints, and the context API
 
 The infrastructure layer rests on the shared base classes from the kernel: `BaseResource`/`BaseResponse` (DTO markers), `BaseAssembler`, the generic `BaseApiEndpoint` that implements CRUD, and `BaseApi` for a context's API facade.
+
+### Configuration and static values
+
+Treat repeated literals as configuration, not as inline code. API base URLs, endpoint fragments, storage keys, status labels, and translation ids should have one source of truth per bounded context.
+
+- API base URLs live in `environment` or the equivalent build-time configuration.
+- Endpoint fragments and repeated string values live in exported constants or enums.
+- If a value appears in more than one file, promote it before it becomes a maintenance bug.
 
 ### DTOs — never leave this layer
 
@@ -253,14 +269,21 @@ It declares only its URL and assembler; CRUD comes from the base class:
 
 ```typescript
 // tracking/infrastructure/shipments-api-endpoint.ts
+const TRACKING_API_PATHS = {
+  shipments: '/tracking/shipments',
+  cancelShipment: 'cancel',
+} as const;
+
 export class ShipmentsApiEndpoint extends BaseApiEndpoint<
   Shipment, ShipmentResource, ShipmentsResponse, ShipmentAssembler
 > {
   constructor(http: HttpClient) {
-    super(http, `${environment.apiBaseUrl}/tracking/shipments`, new ShipmentAssembler());
+    super(http, `${environment.apiBaseUrl}${TRACKING_API_PATHS.shipments}`, new ShipmentAssembler());
   }
 }
 ```
+
+If the base URL changes by environment, keep it in the environment file. Do not hardcode deployment-specific URLs in the endpoint or the store.
 
 ### The context API — the store's only gateway
 
@@ -279,7 +302,7 @@ export class TrackingApi extends BaseApi {
   getShipment(id: number): Observable<Shipment> { return this.shipments.getById(id); }
   cancelShipment(bookingNumber: string, reason: string): Observable<Shipment> {
     return this.shipments.custom<CancelTrackingCommand, ShipmentResource>(
-      `${bookingNumber}/cancel`, 'POST', new CancelShipmentRequest(bookingNumber, reason)
+      `${bookingNumber}/${TRACKING_API_PATHS.cancelShipment}`, 'POST', new CancelShipmentRequest(bookingNumber, reason)
     ).pipe(map(r => new ShipmentAssembler().toEntityFromResource(r)));
   }
 }
@@ -307,7 +330,7 @@ export class TrackingStore {
   readonly loading = this.loadingSignal.asReadonly();
   readonly error = this.errorSignal.asReadonly();
   readonly inTransit = computed(() =>
-    this.shipmentsSignal().filter(s => s.status === 'IN_TRANSIT'));
+    this.shipmentsSignal().filter(s => s.status === ShipmentStatus.IN_TRANSIT));
 
   constructor() { this.loadShipments(); }
 
@@ -350,6 +373,8 @@ export class TrackingStore {
 ```
 
 State is private; the outside reads it through `asReadonly()` signals and `computed()` derivations. The store is also where **cross-entity coordination** lives — keeping that out of views.
+
+Use the same rule for every repeated static value in the feature: route fragments, query keys, cache keys, and API action names belong in one exported constant or enum. The goal is to make the feature searchable and changeable from one place.
 
 > **Angular 22+ alternative:** `httpResource()` can replace the manual `signal` + `subscribe` wiring for the query side. The pattern above works unchanged as an explicit fallback when you need the retry/error coordination shown here.
 
