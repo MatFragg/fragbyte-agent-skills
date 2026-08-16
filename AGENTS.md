@@ -40,8 +40,10 @@ markdownlint "**/*.md"
 ```
 
 Known acceptable deviations (add to `.markdownlint.json`):
+
 - Lines can exceed 80 chars (technical content).
-- Code blocks specify language for syntax highlighting.
+- Fenced code blocks may omit a language (pseudo-code and ASCII diagrams).
+- Duplicate headings are allowed (reference sections reuse headings like "CargoRoute example" and "What breaks without it").
 
 ## Adding a Reference to an Existing Skill
 

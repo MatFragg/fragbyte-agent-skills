@@ -4,9 +4,20 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] — 2026-08-15
+
+### Added
+
+- `design-patterns-arch-patterns.md`: New "State" behavioral pattern — simplified enum + guarded-transition flavor, CargoRoute `Booking` lifecycle example.
+- `design-patterns-arch-patterns.md`: New "Template Method" behavioral pattern — `Cargo.renderManifest()` skeleton with `ContainerCargo`, `BulkCargo`, `RefrigeratedCargo` hooks.
+- `design-patterns-arch-patterns.md`: New "Composite" structural pattern — `Shipment` deriving whole-state from its cargo children.
+- `design-patterns-arch-patterns.md`: "Factory Method" extended with a "Create methods on the aggregate root" subsection — `Shipment.addContainer()`, `addBulkCargo()`, `addReeferCargo()`.
+- `design-patterns-arch-patterns.md`: Added language-conventions disclaimer (pseudo-code intent vs. per-stack idioms) and updated Contents table, pattern decision tree, and pattern-to-concept cross-reference with the four new patterns.
+
 ## [1.0.0] — 2026-08-12
 
 ### Added
+
 - Initial release of the DDD guideliness skill.
 - Strategic design reference: bounded contexts, subdomains, context mapping, CargoRoute worked example.
 - Tactical patterns reference: entity, value object, aggregate, domain event, domain service, repository, factory, CQRS — with invariant checklists, decision trees, and CargoRoute lessons.
@@ -16,16 +27,19 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this ski
 - Angular implementation reference: four-layer structure, shared kernel, entities/commands, DTOs/assemblers/endpoints, signal store, views/components, routing, reactive forms, strategic design on the frontend.
 
 ### Changed
+
 - `tactical-patterns.md`: Removed all embedded code examples; replaced with conceptual summaries. Testing guidance kept inline. Updated quick-reference table from stack-specific idioms to design rules.
 - Folder renamed from `ddd-guideliness-v1` to `ddd-guideliness`.
 
 ### Fixed
+
 - `SKILL.md` "Map of this skill" table now includes a row for `design-patterns-arch-patterns.md`.
 - `tactical-patterns.md` reference updated from `strategic-design.md` to `strategic-design.md` and `domain-modeling.md`.
 
 ## [1.0.1] — 2026-08-12
 
 ### Added
+
 - `spring-boot.md`: Expanded package structure diagram with `outboundservices/` (concept subpackages + `acl/`), `infrastructure/{technology}/{implementation}/` pattern, and `interfaces/acl/` for published facades.
 - `spring-boot.md`: New "Outbound services" section — technology ports in `outboundservices/{concept}/`, adapters in `infrastructure/{technology}/{implementation}/`, when to add vs skip.
 - `spring-boot.md`: New "Marker interfaces for Spring DI" section — problem/solution/why alternatives fail, CargoRoute `BCryptHashingService` example.
@@ -41,5 +55,6 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this ski
 ## [1.0.2] — 2026-08-14
 
 ### Changed
+
 - `angular.md`: Added guidance for keeping API base URLs in environment configuration and moving repeated literals into exported constants or enums.
 - `angular.md`: Updated the endpoint/context API examples to use central constants for endpoint fragments instead of inline magic strings.

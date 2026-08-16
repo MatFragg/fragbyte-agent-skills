@@ -2,6 +2,8 @@
 
 Read this when you're implementing DDD and need to map DDD concepts to well-known design patterns and architectural patterns. Each pattern shows **what problem it solves**, **what breaks when you skip it**, and a **CargoRoute example** to ground it in this skill's domain.
 
+**A note on language conventions:** examples are written in language-agnostic pseudo-code and diagrams. Every language has its own idiomatic way to express these shapes — Java and C# use enums, interfaces, and class hierarchies; TypeScript favors union types with discriminated unions and sealed-union helpers; Kotlin uses sealed classes and enums with behavior. Read the pseudo-code for the *intent*, then map each construct to your stack's convention.
+
 ## Contents
 
 - [Creation patterns](#creation-patterns)
@@ -10,8 +12,11 @@ Read this when you're implementing DDD and need to map DDD concepts to well-know
   - [Command](#command)
   - [Strategy](#strategy)
   - [Observer](#observer)
+  - [State](#state)
+  - [Template Method](#template-method)
 - [Structure patterns](#structure-patterns)
   - [Facade](#facade)
+  - [Composite](#composite)
   - [Marker Interface](#marker-interface)
 - [Enterprise patterns](#enterprise-patterns)
   - [Service Layer](#service-layer)
@@ -64,11 +69,48 @@ BookingNumber.generate():
 
 **CargoRoute pattern value:**
 
-| Aspect | CargoRoute |
-|---|---|
+| Aspect | CargoRoute | Why it matters |
+|---|---|---|
 | Identity generation | `BookingNumber.generate()` (string `BKG-xxxx`) | Ensures valid format from birth |
 | Default state | `BookingStatus.PLACED` | Invariants enforced from creation |
 | Event on creation | `BookingPlaced` registered | Side effects happen via events, not inline |
+
+#### Create methods on the aggregate root
+
+A second flavor of the pattern: the aggregate root exposes *create methods* that construct its children, hiding the `new` from the client and enforcing dedup and validity rules at the point of creation. This is the pattern that keeps child creation in the hands of the root instead of leaking `new ContainerCargo(...)` calls into application services.
+
+#### CargoRoute example: `Shipment.addContainer()`
+
+A `Shipment` holds cargo. Its create methods check for duplicates and validate arguments before constructing a child:
+
+```
+Shipment (aggregate root):
+    # cargo: list<Cargo>
+
+    addContainer(containerRef):
+        if existsContainer(containerRef): return        # dedup — same ref added twice is a no-op
+        cargo.add(ContainerCargo(containerRef))
+
+    addBulkCargo(tonnage):
+        if tonnage <= 0: raise InvalidTonnageError      # invariant enforced at creation
+        cargo.add(BulkCargo(tonnage))
+
+    addReeferCargo(containerRef, temperature):
+        if existsContainer(containerRef): return
+        cargo.add(RefrigeratedCargo(containerRef, temperature))
+
+    existsContainer(ref): boolean
+        → any cargo of container type whose reference equals ref
+```
+
+The caller never writes `new`: it asks the aggregate, and the aggregate decides whether and how to build.
+
+| Flavor | When | CargoRoute |
+|---|---|---|
+| Static factory (create) | Enforces aggregate invariants at birth | `Booking.create()` |
+| Create-method on the root | Root builds children with dedup/validity rules during its life | `Shipment.addContainer()`, `addBulkCargo()` |
+
+Both flavors share the same goal — construction is encapsulated so invalid objects can't exist — they just act at different moments of the aggregate's life.
 
 ---
 
@@ -163,6 +205,108 @@ The tracking projection must only update if the booking save actually committed.
 
 ---
 
+### State
+
+- **When:** An entity's behavior depends on its current lifecycle state, and transitions between states are explicit business rules.
+- **Benefit:** The state machine lives inside the aggregate — states are first-class, and transitions are guarded methods, so impossible transitions become unrepresentable.
+- **Failure mode:** Status stored as a free string and every method re-checks it with scattered `if`s — invalid transitions slip through, and the same rule is re-implemented differently at each call site.
+
+#### The simplified flavor (enum + guarded transitions)
+
+The full GoF State pattern replaces the enum with a hierarchy of state objects. For most DDD aggregates that is overkill: an **enum for the state, plus dedicated transition methods with guards on the aggregate root** is enough and far easier to reason about. Reserve the full state-object hierarchy for genuinely complex, high-churn transitions.
+
+#### CargoRoute example: `Booking` lifecycle
+
+A booking travels through a fixed lifecycle: `PLACED → CONFIRMED → COMPLETED`, and can be `CANCELLED` until it completes. The enum declares every state; a transition contract names every move; the aggregate guards each transition:
+
+```
+enum BookingStatus { PLACED, CONFIRMED, COMPLETED, CANCELLED }
+
+interface Bookable {              # transition contract implemented by the aggregate
+    confirm()
+    cancel()
+    complete()
+}
+
+Booking implements Bookable:
+    # status = BookingStatus.PLACED
+
+    confirm():                    # guard: only a PLACED booking can be confirmed
+        if status == PLACED:      status = CONFIRMED
+        else:                     raise IllegalTransition(PLACED → status, "confirm")
+
+    cancel():                     # guard: COMPLETED bookings can't be cancelled
+        if status in {PLACED, CONFIRMED}: status = CANCELLED
+        else:                     raise IllegalTransition(status, "cancel")
+
+    complete():                   # guard: only CONFIRMED bookings reach completion
+        if status == CONFIRMED:   status = COMPLETED
+        else:                     raise IllegalTransition(status, "complete")
+```
+
+Transitions can also be **derived from the aggregate's parts** — see [Composite](#composite) for how a `Shipment` derives its readiness from the status of its cargo children instead of a flat guard.
+
+| Aspect | CargoRoute |
+|---|---|
+| Status enum | `BookingStatus` (PLACED, CONFIRMED, COMPLETED, CANCELLED) |
+| Transition contract | `Bookable` interface implemented by `Booking` |
+| Guarded transitions | `confirm()` only from PLACED; `cancel()` only before COMPLETED |
+| Derived transitions | `Shipment` readiness derived from cargo children (Composite) |
+
+#### What breaks without it
+
+Without a first-class state machine, any code can flip the status field directly. A cancelled booking gets confirmed; an unconfirmed booking completes; the state chart exists only in someone's head, and each transition re-implements the rules differently.
+
+---
+
+### Template Method
+
+- **When:** You have a family of types that share the same overall algorithm or skeleton but vary in specific steps.
+- **Benefit:** The invariant part of the flow lives once in the base type; subclasses override only the hook methods where they differ.
+- **Failure mode:** Copy-pasting the skeleton into every subclass — one bug in the shared flow has to be fixed N times, and the copies drift apart over time.
+
+#### CargoRoute example: `Cargo.renderManifest()`
+
+`Cargo` defines a fixed skeleton for rendering a cargo manifest. Subclasses (`ContainerCargo`, `BulkCargo`, `RefrigeratedCargo`) override only the two hooks — what the cargo shows in its body and whether it is trackable — while the header/footer assembly stays in the base:
+
+```
+class Cargo (base entity):
+    # id, type, status
+
+    isTrackable(): boolean       # hook — default false
+    getManifestContent(): Text   # hook — default ""
+
+    renderManifest(): Text       # TEMPLATE — fixed skeleton, not overridden
+        header = "CARGO " + id + " [" + type + "]"
+        body   = getManifestContent()
+        footer = isTrackable() ? "TRACKABLE" : "NOT TRACKABLE"
+        return header + line(body) + footer
+
+class ContainerCargo extends Cargo:
+    containerRef: String
+    isTrackable()        → true
+    getManifestContent() → "Container " + containerRef
+
+class BulkCargo extends Cargo:
+    tonnage: Decimal
+    isTrackable()        → false
+    getManifestContent() → tonnage + " tonnes loose cargo"
+
+class RefrigeratedCargo extends Cargo:
+    containerRef: String
+    temperature: Decimal
+    isTrackable()        → true
+    getManifestContent() → "Reefer " + containerRef + " at " + temperature + "°C"
+```
+
+Any change to the skeleton (a new header line, a different separator) is made in exactly one place. Adding a new cargo type is just a new subclass with the two hooks.
+
+#### What breaks without it
+
+Without a shared skeleton, each subclass renders its own manifest from scratch. Formatting rules are duplicated, one subclass forgets the header, another renders the footer differently — and there is no single place to fix the contract.
+
+---
+
 ## Structure patterns
 
 ### Facade
@@ -202,6 +346,55 @@ Two bounded contexts can define facades that the other consumes (e.g., Booking c
 - Communication is synchronous and in-process.
 
 In microservices, these facade interfaces become HTTP/gRPC clients — the interface contract stays, the adapter changes from in-process to network call.
+
+---
+
+### Composite
+
+- **When:** A whole is made of parts, and the whole's behavior must be derived from its parts — composition rules and aggregate-level state live in one place.
+- **Benefit:** The aggregate root treats its children as one unit, and its invariants are enforced *by construction* from the children's combined state.
+- **Failure mode:** The root keeps a flat status while its children drift — the root reads APPROVED while one child is still in DRAFT, because nothing keeps them in sync.
+
+#### The partial flavor used in DDD
+
+The pure GoF Composite introduces a uniform `Component` interface so leaves and composites are interchangeable. In DDD, aggregates rarely need that uniform interface — the pragmatic flavor is **the aggregate root owning its children and deriving its own state from theirs**. That is enough to guarantee whole/part consistency.
+
+#### CargoRoute example: `Shipment` deriving readiness from its cargo
+
+A `Shipment` is only ready to load when **every** cargo child is declared, and can only be confirmed when every child is confirmed. The root's transition methods delegate to the children's state instead of using a flat flag:
+
+```
+Shipment (aggregate root, implements Bookable):
+    # cargo: list<Cargo>
+    # status = BookingStatus.PLACED
+
+    isReadyForLoading(): boolean
+        → allCargoHaveStatus(DECLARED) and not cargo.isEmpty()
+
+    confirm():
+        if allCargoHaveStatus(CONFIRMED): status = CONFIRMED
+        else: raise IncompleteShipmentError
+            # a shipment with a child still in DECLARED cannot be confirmed
+
+    hasTrackableCargo(): boolean
+        → any cargo where child.isTrackable()
+
+    allCargoHaveStatus(target): boolean
+        → every child's status equals target
+```
+
+The whole's invariants are *defined* by the parts: you cannot confirm a shipment whose cargo isn't confirmed, because the check is structural, not a parallel flag someone must remember to update.
+
+| Aspect | CargoRoute |
+|---|---|
+| Whole (aggregate root) | `Shipment` |
+| Parts (children) | `ContainerCargo`, `BulkCargo`, `RefrigeratedCargo` |
+| Derived whole-state | `isReadyForLoading()`, `confirm()` (all children confirmed) |
+| Uniform component interface | Not needed — the root's derived checks replace it |
+
+#### What breaks without it
+
+If the shipment tracks its status separately from its cargo, the two can disagree. Cargo gets confirmed but the shipment status is stale; the shipment says CONFIRMED while a child is still DECLARED. The composition rule exists nowhere as code — only as an unwritten convention.
 
 ---
 
@@ -264,8 +457,8 @@ Flow:
   5. Events auto-publish on successful commit
 ```
 
-| Aspect | CargoRoute |
-|---|---|
+| Aspect | CargoRoute | Why it matters |
+|---|---|---|
 | Interface location | `domain/services` (port in the domain) | Abstraction before implementation |
 | Implementation location | `application/internal/commandservices` | Impl in application layer |
 | Transaction boundary | On the orchestrator method | All side effects in one atomic unit |
@@ -359,10 +552,10 @@ If `Booking` entity is returned directly from a REST endpoint, adding a field to
     → new CargoWeight(resource.cargoWeight(), resource.weightUnit())
 ```
 
-| Assembler | Direction |
+| Direction | Assembler |
 |---|---|
-| Entity → Resource | `BookingResourceFromEntityAssembler` | Outgoing |
-| Resource → Command | `PlaceBookingCommandFromResourceAssembler` | Incoming |
+| Entity → Resource | `BookingResourceFromEntityAssembler` |
+| Resource → Command | `PlaceBookingCommandFromResourceAssembler` |
 
 ---
 
@@ -557,17 +750,29 @@ When you're modeling and don't know which pattern to reach for:
 Are you creating a domain object that needs invariants?
   → Factory Method (create() with validation + event registration)
 
+Does the aggregate root need to build its children while hiding the `new`?
+  → Factory Method — create-methods on the root (dedup + validity at creation)
+
 Do you need to capture an intent to change as an immutable object?
   → Command (validated record/object passed to a handler)
 
 Do you have multiple interchangeable algorithms for the same thing?
   → Strategy (interface in domain, multiple impls in outbound)
 
+Do you have a family of types sharing one skeleton with varying steps?
+  → Template Method (base owns the skeleton, subclasses override hooks)
+
 Do other parts of the system need to react to something that happened?
   → Observer (domain event + event handler that runs after commit)
 
+Does an entity's behavior depend on its current lifecycle state?
+  → State (enum + guarded transition methods on the aggregate root)
+
 Does another bounded context need to call into this one?
   → Facade (interface in interfaces/acl, impl in application/acl)
+
+Does the aggregate need to derive its own state from the state of its parts?
+  → Composite (aggregate root derives whole-state from its children)
 
 Do you have cross-aggregate coordination?
   → Service Layer (transactional orchestrator)
@@ -610,12 +815,16 @@ Are technical concerns (web, persistence, external services) leaking into the do
 | DDD concept | Pattern(s) | CargoRoute example |
 |---|---|---|
 | Aggregate root with behavior | Factory Method | `Booking.create()`, `Booking.confirm()`, `Booking.cancel()` |
+| Child creation hidden on root | Factory Method (create-methods) | `Shipment.addContainer()`, `addBulkCargo()`, `addReeferCargo()` |
 | Value object identity | Factory Method | `BookingNumber.generate()`, `BookingNumber.of("BKG-123")` |
 | Intent to change state | Command | `PlaceBookingCommand`, `CancelBookingCommand` |
 | Intent to read state | Query | `GetBookingQuery`, `FindBookingsForVoyageQuery` |
 | Multiple algorithms | Strategy | `RouteFeasibilityService` (optimistic vs. conservative) |
+| Shared skeleton, varying steps | Template Method | `Cargo.renderManifest()` overridden by `ContainerCargo`, `BulkCargo`, `RefrigeratedCargo` |
+| Stateful lifecycle on aggregate | State | `Booking.confirm()`, `Booking.cancel()` guarded by `BookingStatus` |
 | Something happened | Observer (Domain Event) | `BookingConfirmed` → `BookingConfirmedHandler` |
 | Cross-context access | Facade (ACL) | `BookingContextFacade` consumed by PortOps |
+| Whole derives state from parts | Composite | `Shipment` readiness derived from its cargo children |
 | Cross-aggregate coordination | Service Layer | `BookingCommandServiceImpl` orchestrates create + feasibility + save |
 | Persist/retrieve aggregate | Repository | `BookingRepository.findByBookingNumber()` |
 | External technology isolation | Ports & Adapters | `BookingRepository` (port) → `JpaBookingRepository` (adapter) |
