@@ -8,6 +8,7 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ### Changed
 
+- **ddd-guideliness** skill (v1.0.4): `spring-boot.md` now properly separates aggregates, entities, and value objects; adds `AuditableModel` for internal entities; new internal entity examples (Cargo, RouteStop) in CargoRoute domain
 - **ddd-guideliness** skill (v1.0.3): added State, Template Method, and Composite patterns plus aggregate-root create-methods to `design-patterns-arch-patterns.md`, all rewritten as language-agnostic pseudo-code in the CargoRoute domain.
 
 ## [1.0.0] — 2026-08-12

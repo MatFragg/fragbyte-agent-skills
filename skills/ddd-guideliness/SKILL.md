@@ -4,7 +4,7 @@ description: Apply Domain-Driven Design when modeling a business domain or struc
 license: MIT
 metadata:
   author: Ethan Matias Aliaga Aguirre
-  version: "1.0.3"
+  version: "1.0.4"
 ---
 
 # Domain-Driven Design (DDD)

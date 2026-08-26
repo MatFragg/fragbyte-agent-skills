@@ -4,6 +4,21 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.4] — 2026-08-26
+
+### Changed
+
+- `spring-boot.md`: Restructured to explicitly separate **aggregates**, **entities**, and **value objects** per DDD tactical patterns
+- `spring-boot.md`: Package structure now includes `domain/model/entities/` (flat) alongside `aggregates/` and `valueobjects/`
+- `spring-boot.md`: Added `AuditableModel` in shared kernel for internal entities needing auto-generated surrogate ID + audit timestamps
+- `spring-boot.md`: New "Internal entities within an aggregate" subsection — two patterns: (1) explicit ID assigned by aggregate root, (2) auto-generated ID via `AuditableModel`; CargoRoute examples `Cargo` and `RouteStop`
+- `spring-boot.md`: Section renamed from "Aggregate root and entities" to "Entities and aggregate roots"
+- `spring-boot.md`: Quick reference table splits internal entities (two rows) from aggregate roots
+
+### Fixed
+
+- `spring-boot.md`: Internal entities were previously conflated with aggregate roots; now correctly modeled as `@Embeddable` classes with identity (explicit or generated) within the aggregate boundary
+
 ## [1.0.3] — 2026-08-15
 
 ### Added

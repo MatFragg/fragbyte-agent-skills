@@ -9,7 +9,7 @@ Works on Spring Boot 3.x with Java 17+. Persistence annotations live in `jakarta
 - [Package structure](#package-structure)
 - [The shared kernel](#the-shared-kernel)
 - [Value objects](#value-objects)
-- [Aggregate root and entities](#aggregate-root-and-entities)
+- [Entities and aggregate roots](#entities-and-aggregate-roots)
 - [Commands and queries](#commands-and-queries)
 - [Command and query services](#command-and-query-services)
 - [Repositories](#repositories)
@@ -50,7 +50,8 @@ com.cargoroute.booking
 │               └── External{BC}Service.java  // calls another context's facade
 ├── domain                             // the domain model + its ports (depends on nothing)
 │   ├── model
-│   │   ├── aggregates
+│   │   ├── aggregates                 // aggregate roots only
+│   │   ├── entities                   // internal entities within aggregates
 │   │   ├── valueobjects
 │   │   ├── commands                   // command types (domain)
 │   │   ├── queries                    // query types (domain)
@@ -68,7 +69,7 @@ com.cargoroute.booking
 
 - **`interfaces`** — inbound adaptors. REST controllers, listeners, CLI. They translate external input into application calls. No business logic. The `acl/` subpackage holds the facade interface this context publishes for others.
 - **`application`** — application services. They orchestrate use cases: load aggregates, invoke behavior, manage transactions. Coordinate, hold no business rules. The `outboundservices/` subpackage holds technology-agnostic port interfaces — concept subpackages (`hashing/`, `tokens/`, `llm/`) for external dependencies, and `acl/` exclusively for `External{BC}Service` classes that call other contexts' facades.
-- **`domain`** — the model. Aggregates, value objects, domain events, service *interfaces* (ports), exceptions. Every business rule lives here.
+- **`domain`** — the model. Aggregates, entities, value objects, domain events, service *interfaces* (ports), exceptions. Every business rule lives here.
 - **`infrastructure`** — outbound adaptors. Repositories, external API clients, framework integrations. Follows the `infrastructure/{technology}/{implementation}/` pattern (e.g., `infrastructure/hashing/bcrypt/`, `infrastructure/authorization/sfs/`).
 
 ## The shared kernel
@@ -88,6 +89,26 @@ public class AuditableAbstractAggregateRoot<T extends AbstractAggregateRoot<T>>
     @CreatedDate @Column(nullable = false, updatable = false)
     private Date createdAt;
     @LastModifiedDate @Column(nullable = false)
+    private Date updatedAt;
+}
+```
+
+`AuditableModel` provides a generated surrogate id and audit timestamps for **internal entities that need their own database identity** — unlike the aggregate root base, it does not extend `AbstractAggregateRoot` (no domain event registration). Enable with `@EnableJpaAuditing`.
+
+```java
+// shared/domain/model/entities
+@Getter
+@MappedSuperclass
+@EntityListeners(AuditingEntityListener.class)
+public class AuditableModel {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    @CreatedDate
+    @Column(nullable = false, updatable = false)
+    private Date createdAt;
+    @LastModifiedDate
+    @Column(nullable = false)
     private Date updatedAt;
 }
 ```
@@ -152,6 +173,8 @@ public record CustomerId(Long value) {
 
 A record fits most VOs, but use an `@Embeddable` **class** when the VO has to map a JPA association or collection (records are final).
 
+An `@Embeddable` **class** (not a record) is also used for **internal entities** that need JPA associations/collections or behavior beyond what a record allows — see [Entities and aggregate roots](#entities-and-aggregate-roots).
+
 ### What this saved us
 
 Using `String origin` and `String destination` everywhere, a developer passed `destination` where `origin` was expected in a route check. The route looked valid — London to Southampton on a vessel leaving from Southampton. The cargo never moved. Typed `PortCode` VOs make this a compile error.
@@ -174,9 +197,139 @@ void rejectsMixingUnits() {
 }
 ```
 
-## Aggregate root and entities
+## Entities and aggregate roots
 
-The aggregate root is a JPA `@Entity`. Give it real **behavior**, enforce invariants inside it, and **reference other aggregates by their typed id value object** — never `@ManyToOne` to another aggregate root.
+An **entity** is an object with a distinct identity that persists through changes to its attributes. In DDD, entities come in two flavors:
+
+- **Aggregate root** — the entry point to an aggregate, an `@Entity` that extends `AbstractAggregateRoot` (or `AuditableAbstractAggregateRoot`) and can register domain events
+- **Internal entity** — an entity *inside* an aggregate, reachable only through the root, mapped as `@Embeddable` (not a separate `@Entity` table)
+
+Both have identity. The difference is *who assigns it* and whether they participate in the aggregate's transactional boundary.
+
+### Internal entities within an aggregate
+
+Internal entities live in `domain/model/entities/` (flat folder) and are embedded in their aggregate root. Two patterns for identity:
+
+#### Option 1: Explicit ID (assigned by the aggregate root)
+
+Use when the aggregate root controls the entity's identity — e.g., a `Cargo` inside a `Booking`, where the `Booking` assigns a `CargoId`.
+
+```java
+// domain/model/entities/Cargo.java
+@Embeddable
+public class Cargo {
+    @Embedded private CargoId id;           // explicit identity (typed VO)
+    @Embedded private CargoWeight weight;
+    @Embedded private CargoDimensions dimensions;
+    private String description;
+    private boolean hazardous;
+
+    public Cargo(CargoId id, CargoWeight weight, CargoDimensions dimensions,
+                 String description, boolean hazardous) {
+        this.id = id;
+        this.weight = weight;
+        this.dimensions = dimensions;
+        this.description = description;
+        this.hazardous = hazardous;
+    }
+
+    // behavior: validate combination of weight + dimensions + hazardous
+    public void validateForVessel(VesselCapacity capacity) {
+        if (hazardous && !capacity.allowsHazardous())
+            throw new IllegalStateException("vessel does not allow hazardous cargo");
+        if (weight.tonnes() > capacity.maxWeightTonnes())
+            throw new IllegalStateException("cargo exceeds vessel weight capacity");
+    }
+
+    // JPA hydration
+    protected Cargo() { }
+}
+```
+
+**Usage in the aggregate root:**
+
+```java
+@Entity
+public class Booking extends AuditableAbstractAggregateRoot<Booking> {
+    @Embedded private BookingNumber bookingNumber;
+    @Embedded private CustomerId customerId;
+    @Embedded private PortCode origin;
+    @Embedded private PortCode destination;
+    @Enumerated(EnumType.STRING)
+    private BookingStatus status;
+    @Embedded private Cargo cargo;           // internal entity, embedded
+
+    protected Booking() { }
+
+    public Booking(PlaceBookingCommand command) {
+        this.bookingNumber = new BookingNumber("BKG-" + randomSuffix());
+        this.customerId = command.customerId();
+        this.origin = command.origin();
+        this.destination = command.destination();
+        // aggregate root assigns the internal entity's ID
+        this.cargo = new Cargo(
+            new CargoId("CG-" + randomSuffix()),
+            command.cargoWeight(),
+            command.cargoDimensions(),
+            command.cargoDescription(),
+            command.isHazardous()
+        );
+        this.status = BookingStatus.PLACED;
+        registerEvent(new BookingPlaced(bookingNumber, customerId));
+    }
+    // ... confirm(), loadCargo(), cancel() as before
+}
+```
+
+#### Option 2: Auto-generated ID via `AuditableModel`
+
+Use when the internal entity needs its own database-generated surrogate identity and audit timestamps — e.g., a `RouteStop` inside a `Route` aggregate, where stops are persisted with their own identity.
+
+```java
+// domain/model/entities/RouteStop.java
+@Embeddable
+public class RouteStop extends AuditableModel {
+    @Embedded private PortCode port;
+    private Integer sequence;
+    private LocalDateTime eta;
+
+    public RouteStop(PortCode port, Integer sequence, LocalDateTime eta) {
+        this.port = port;
+        this.sequence = sequence;
+        this.eta = eta;
+    }
+
+    // behavior: validate sequence, compute duration to next stop
+    public Duration durationTo(RouteStop next) {
+        if (next == null) return Duration.ZERO;
+        return Duration.between(this.eta, next.eta);
+    }
+
+    protected RouteStop() { }  // JPA
+}
+```
+
+**Usage in the aggregate root:**
+
+```java
+@Entity
+public class Route extends AuditableAbstractAggregateRoot<Route> {
+    @Embedded private RouteId id;
+    @ElementCollection
+    @CollectionTable(name = "route_stops")
+    private List<RouteStop> stops = new ArrayList<>();
+
+    // ... behavior methods managing stops
+}
+```
+
+> **Choose based on project requirements:** Explicit IDs (Option 1) keep identity domain-driven and avoid a DB round-trip. Auto-generated IDs (Option 2) are simpler when the entity is effectively a detail that the database should number. Both are valid — pick one style per aggregate and be consistent.
+
+---
+
+### Aggregate root
+
+The aggregate root is a JPA `@Entity`. Give it real **behavior**, enforce invariants inside it, and **reference other aggregates by their typed id value object** — never `@ManyToOne` to another aggregate root. Extend `AbstractAggregateRoot` (or `AuditableAbstractAggregateRoot` from the shared kernel) so it can register domain events.
 
 ### CargoRoute: the naive Booking (before)
 
@@ -209,6 +362,7 @@ public class Booking extends AuditableAbstractAggregateRoot<Booking> {
     @Enumerated(EnumType.STRING)
     private BookingStatus status;
     @Embedded private CargoWeight cargoWeight;
+    @Embedded private Cargo cargo;       // internal entity (see above)
 
     protected Booking() { }  // JPA
 
@@ -217,7 +371,13 @@ public class Booking extends AuditableAbstractAggregateRoot<Booking> {
         this.customerId = command.customerId();
         this.origin = command.origin();
         this.destination = command.destination();
-        this.cargoWeight = command.cargoWeight();
+        this.cargo = new Cargo(
+            new CargoId("CG-" + randomSuffix()),
+            command.cargoWeight(),
+            command.cargoDimensions(),
+            command.cargoDescription(),
+            command.isHazardous()
+        );
         this.status = BookingStatus.PLACED;
         registerEvent(new BookingPlaced(bookingNumber, customerId));
     }
@@ -225,7 +385,7 @@ public class Booking extends AuditableAbstractAggregateRoot<Booking> {
     public void confirm(RouteFeasibilityService feasibility, RouteProposal proposal) {
         if (status != BookingStatus.PLACED)
             throw new IllegalStateException("can only confirm a placed booking");
-        if (!feasibility.isFeasible(proposal, cargoWeight))
+        if (!feasibility.isFeasible(proposal, cargo.getWeight()))
             throw new IllegalStateException("proposed route cannot handle cargo weight");
         status = BookingStatus.CONFIRMED;
         registerEvent(new BookingConfirmed(bookingNumber, proposal.routeId(), proposal.vessel()));
@@ -738,10 +898,15 @@ class BookingExceptionHandler {
 
 ## Identity and persistence: preferences
 
-- **Identity.** Three approaches, in order of recommendation:
+- **Identity (aggregate roots).** Three approaches, in order of recommendation:
   1. **Typed id VO with application-side generation** — `BookingNumber.generate()` produces `"BKG-" + UUID`, or Glottia's `UserId.newUserId()` produces `"us-" + UUID.randomUUID()`, both at construction time, mapped as `@EmbeddedId`. Keeps identity type-safe *and* avoids a database round-trip to retrieve the generated key.
   2. **Typed id VO as `@EmbeddedId`** — if the ID is externally assigned (e.g., a booking reference the customer chooses), use a typed VO that validates format at construction time. No `@GeneratedValue` needed.
   3. **Surrogate `Long` with `@GeneratedValue`** — the shared kernel's `AuditableAbstractAggregateRoot` approach. Use this when you need auto-increment IDs, but **always** use typed VOs for cross-aggregate references (`CustomerId`, not bare `Long`).
+
+- **Identity (internal entities).** Two patterns, choose per aggregate:
+  - **Explicit ID** — the aggregate root assigns a typed VO (e.g., `CargoId`) at construction. Keeps identity domain-driven, no DB round-trip.
+  - **Auto-generated ID via `AuditableModel`** — internal entity extends `AuditableModel` for a generated `Long` surrogate ID + audit timestamps. Use when the entity needs its own database identity. Numeric auto-increment is common; UUID/other strategies are also acceptable.
+
 - **Repository.** Spring Data directly is simplest; declare a domain port when isolating the domain matters.
 - **JPA in the domain.** Annotating entities with JPA is fine for most projects. The cost is a soft dependency on the framework. For maximum isolation, keep the domain as plain Java and map to a persistence model in `infrastructure`.
 
@@ -770,8 +935,10 @@ A domain test that needs `@SpringBootTest` to pass is usually a sign business lo
 ## Quick reference
 
 | DDD concept | Spring Boot idiom |
-|---|---|
-| Entity / Aggregate Root | `@Entity` class, behavior methods, `AbstractAggregateRoot` |
+| --- | --- |
+| Entity (internal, explicit ID) | `@Embeddable` class with typed ID field (VO), behavior methods |
+| Entity (internal, DB-generated ID) | `@Embeddable` class extending `AuditableModel`, behavior methods |
+| Aggregate Root | `@Entity` class extending `AbstractAggregateRoot`, behavior methods |
 | Value Object | `record`, `@Embeddable`, validated in compact constructor |
 | Typed identifier | `record` `@Embeddable` wrapping the raw id |
 | Repository | Spring Data interface extending `JpaRepository<Agg, Id>` |
