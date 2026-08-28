@@ -6,7 +6,7 @@ A collection of reference skills for [OpenCode](https://opencode.ai) — reusabl
 
 | Skill | Domain | Last Updated |
 |---|---|---|
-| [ddd-guideliness](skills/ddd-guideliness) | Domain-Driven Design (backend & frontend) | 2026-08-12 |
+| [ddd-guideliness](skills/ddd-guideliness) | Domain-Driven Design (backend & frontend) | 2026-08-26 |
 
 ## How to Use
 
