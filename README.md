@@ -1,6 +1,6 @@
 # Fragbyte Agent Skills
 
-A collection of reference skills for [OpenCode](https://opencode.ai) — reusable, opinionated instructions for specific domains and tasks.
+A collection of reference skills for [OpenCode](https://opencode.ai), [Claude](https://claude.ai) & [Codex](https://openai.com/), opinionated instructions for specific domains and tasks.
 
 ## Included Skills
 
