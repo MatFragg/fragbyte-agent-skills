@@ -1,10 +1,10 @@
 ---
 name: ddd-guideliness
-description: Apply Domain-Driven Design when modeling a business domain or structuring code around business logic, on the backend or the frontend. Use whenever the user is designing or refactoring a domain model, pulling business rules out of controllers or UI components, organizing a backend service or an Angular app by domain or bounded context, or mentions DDD, bounded contexts, ubiquitous language, aggregates, entities, value objects, domain events, repositories, domain or application services, anti-corruption layers, or CQRS — even if they never say "DDD". Covers strategic design and collaborative modeling, tactical patterns, and idiomatic implementation in Spring Boot/Java or Angular. Prefer it over ad-hoc modeling whenever non-trivial business rules or invariants are involved.
+description: Apply Domain-Driven Design when modeling a business domain or structuring code around business logic, on the backend or the frontend. Use whenever the user is designing or refactoring a domain model, pulling business rules out of controllers or UI components, organizing a backend service or an Angular app by domain or bounded context, or mentions DDD, bounded contexts, ubiquitous language, aggregates, entities, value objects, domain events, repositories, domain or application services, anti-corruption layers, or CQRS — even if they never say "DDD". Covers strategic design and collaborative modeling, tactical patterns, and idiomatic implementation in Spring Boot/Java, NestJS/TypeScript, or Angular. Prefer it over ad-hoc modeling whenever non-trivial business rules or invariants are involved.
 license: MIT
 metadata:
   author: Ethan Matias Aliaga Aguirre
-  version: "1.0.4"
+  version: "1.0.5"
 ---
 
 # Domain-Driven Design (DDD)
@@ -25,6 +25,7 @@ Apply this whenever you model a domain or write code around business logic. Foll
 | You need to discover the domain with business experts | `strategic-design.md` and `domain-modeling.md` |
 | You're modeling entities, aggregates, or invariants inside a single context | `tactical-patterns.md` |
 | You're writing Java/Spring Boot code | `spring-boot.md` |
+| You're writing NestJS/TypeScript code | `nestjs.md` |
 | You're writing Angular/TypeScript code | `angular.md` |
 | You're looking up design patterns and their DDD equivalents | `design-patterns-arch-patterns.md` |
 
@@ -115,5 +116,6 @@ Use this checklist for any non-trivial modeling or refactoring request:
 The principles above are stack-agnostic, but the idioms differ. When writing code, read the file for the project's stack:
 
 - **Spring Boot / Java** → `references/spring-boot.md`
+- **NestJS / TypeScript** → `references/nestjs.md`
 - **Angular (frontend, DDD-adapted)** → `references/angular.md`
 - **Design patterns & architectural patterns** → `references/design-patterns-arch-patterns.md`
