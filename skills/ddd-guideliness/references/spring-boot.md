@@ -342,7 +342,7 @@ public class Booking {
     private String originPort;          // raw string — typo-prone
     private String destinationPort;     // easy to mix
     private String status;              // "CONFIRMED"? "CONFIRMD"?
-    
+
     // 10 setters for everything. No behavior.
     // ApplicationService checks: if (status != "CONFIRMED") throw ...
 }
@@ -684,23 +684,26 @@ Use `@TransactionalEventListener` when the handler must run only after commit (e
 
 When this context needs something from **another** bounded context, do not import its model. The provider exposes a **facade interface**; the consumer translates the result into its own value objects.
 
+**Keep the facade signature in primitives** — the provider's own language — and let the *consumer's* `External{Bc}Service` do the translation into its own VOs. A facade typed with another context's VOs forces the provider to import a model it doesn't own, which is exactly the reversed dependency the ACL exists to prevent.
+
 ```java
-// Vessel Scheduling exposes
+// Vessel Scheduling exposes — primitives, its own language
 public interface VesselSchedulingFacade {
-    VoyageNumber findViableVoyage(PortCode origin, PortCode destination, CargoWeight weight);
+    Optional<String> findViableVoyage(String originPort, String destinationPort, BigDecimal weightTonnes);
 }
 
-// Booking consumes — translates to own VOs
+// Booking consumes — translates into its own VOs, in one place
 @Service
 public class ExternalVesselService {
     private final VesselSchedulingFacade scheduling;
     public Optional<RouteProposal> proposeRoute(PortCode origin, PortCode destination, CargoWeight weight) {
-        var voyage = scheduling.findViableVoyage(origin, destination, weight);
-        return voyage == null ? Optional.empty()
-            : Optional.of(new RouteProposal(voyage, computeEta(origin, destination)));
+        return scheduling.findViableVoyage(origin.value(), destination.value(), weight.amount())
+            .map(voyage -> new RouteProposal(new VoyageNumber(voyage), computeEta(origin, destination)));
     }
 }
 ```
+
+> **When a facade returns a VO instead of primitives.** Primitives are the default: most facades return one or two values, and wrapping a single id/amount into a VO is the consumer's job. Use a VO (or a small DTO) at the boundary only when the payload is genuinely large or compound — roughly **6+ fields** the consumer would otherwise reassemble field-by-field — as in the [Cross-context reference data](#cross-context-reference-data) pattern. If a VO is independently needed by 3+ bounded contexts, promote it to the Shared Kernel (`shared/`) rather than typing each boundary with it by accident (see `references/domain-modeling.md`).
 
 ### Outbound vs inbound ACL
 
