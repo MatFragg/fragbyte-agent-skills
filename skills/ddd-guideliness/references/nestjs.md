@@ -83,9 +83,22 @@ Unlike the interfaces used only within `application` (command/query services), a
 A `shared/` folder holds the small **shared kernel** every module reuses — base classes, a common response resource, cross-cutting config. Keep it small and stable; it must never hold business rules.
 
 ```typescript
-// shared/domain/model/base-entity.ts
-export interface BaseEntity {
-  readonly id: string;
+// shared/domain/model/aggregate-root.ts
+// The domain counterpart of Spring's AbstractAggregateRoot: every aggregate root
+// raises domain events into this buffer and drains them after the unit of work
+// commits. No persistence or framework types — just the event drain.
+export abstract class AggregateRoot {
+  protected readonly _domainEvents: DomainEvent[] = [];
+
+  protected registerEvent(event: DomainEvent): void {
+    this._domainEvents.push(event);
+  }
+
+  pullDomainEvents(): DomainEvent[] {
+    const events = [...this._domainEvents];
+    this._domainEvents.length = 0;
+    return events;
+  }
 }
 ```
 
@@ -249,9 +262,13 @@ export function parseWeightUnit(value: string): WeightUnit {
 ```typescript
 // domain/model/valueobjects/port-code.value-object.ts
 export class PortCode {
-  constructor(public readonly value: string) {
+  private constructor(public readonly value: string) {}
+
+  static of(value: string): PortCode {
     if (!value?.trim()) throw new Error('port code required');
+    return new PortCode(value);
   }
+
   equals(other: PortCode): boolean { return this.value === other.value; }
 }
 ```
@@ -276,12 +293,18 @@ export class BookingNumber {
 // Use value objects for typed identifiers too, so a reference to another aggregate
 // stays type-safe and meaningful — never a bare string or number.
 export class CustomerId {
-  constructor(public readonly value: string) {
+  private constructor(public readonly value: string) {}
+
+  static of(value: string): CustomerId {
     if (!value) throw new Error('invalid customer id');
+    return new CustomerId(value);
   }
+
   equals(other: CustomerId): boolean { return this.value === other.value; }
 }
 ```
+
+**VO construction conventions.** Quantity VOs — a measurement like `CargoWeight` — use a public constructor and validate in it. Identifier VOs — `BookingNumber`, `CustomerId`, `PortCode`, `VoyageNumber`, `RouteId`, `CargoId`, `ShipmentId` — use a `private` constructor plus a static `of()` (parse + validate) and `generate()` where identity is created. That keeps the coercion boundary explicit: a `CustomerId` is only ever built from a named source, not from a `new` scattered through an orchestrator.
 
 ```typescript
 // domain/model/valueobjects/voyage-number.value-object.ts
@@ -338,6 +361,22 @@ export class CargoId {
 
   equals(other: CargoId): boolean { return this.value === other.value; }
 }
+
+// domain/model/valueobjects/shipment-id.value-object.ts
+export class ShipmentId {
+  private constructor(public readonly value: string) {}
+
+  static generate(): ShipmentId {
+    return new ShipmentId(randomUUID());
+  }
+
+  static of(value: string): ShipmentId {
+    if (!value) throw new Error('invalid shipment id');
+    return new ShipmentId(value);
+  }
+
+  equals(other: ShipmentId): boolean { return this.value === other.value; }
+}
 ```
 
 ### What this saved us
@@ -369,9 +408,9 @@ An **entity** is an object with a distinct identity that persists through change
 
 The TypeORM class in `infrastructure/persistence/typeorm/entities/` is a **separate, third thing**: the persistence shape. A `BookingOrmEntity` and the domain `Booking` are never the same class.
 
-### Why not decorate the domain class directly (the JPA-style shortcut)
+### Why not decorate the domain class directly
 
-Spring Boot can annotate the aggregate root itself with `@Entity` because JPA's mapping is metadata-only — it doesn't force framework types into the class's behavior. TypeORM's decorators are lighter-weight in theory but in practice pull in column types, relation decorators, and lazy-loading semantics that leak persistence concerns into method signatures the moment the model grows past a toy example. Keeping the split is the safer default in Nest; treat "decorate the domain class directly" as a shortcut for genuinely trivial, CRUD-only modules, not the baseline.
+Spring can annotate the aggregate root with `@Entity` because JPA is metadata-only. TypeORM's decorators pull in column types, relations, and lazy-loading semantics that leak persistence concerns into the domain; keeping the split is the safer default in Nest. Treat "decorate the domain class" as a shortcut for trivial, CRUD-only modules only.
 
 ### CargoRoute: the naive Booking (before)
 
@@ -399,9 +438,7 @@ The constructor below is for **creating a new booking** — it always starts `PL
 // domain/model/aggregates/booking.aggregate.ts
 export enum BookingStatus { PLACED = 'PLACED', CONFIRMED = 'CONFIRMED', LOADED = 'LOADED', CANCELED = 'CANCELED' }
 
-export class Booking {
-  private readonly _domainEvents: DomainEvent[] = [];
-
+export class Booking extends AggregateRoot {
   // Private: only reachable through the two named factories below, so a
   // caller can never construct a Booking in an ambiguous "is this new or
   // reloaded?" state.
@@ -435,7 +472,7 @@ export class Booking {
       input.cargo,
       null, // no voyage until confirmed
     );
-    booking._domainEvents.push(new BookingPlaced(booking._bookingNumber, booking._customerId));
+    booking.registerEvent(new BookingPlaced(booking._bookingNumber, booking._customerId));
     return booking;
   }
 
@@ -460,7 +497,7 @@ export class Booking {
     // (see "Anti-corruption layer") — assign it as-is, never re-wrap a value
     // that's already the right type.
     this._voyageNumber = proposal.vessel;
-    this._domainEvents.push(
+    this.registerEvent(
       new BookingConfirmed(this._bookingNumber, RouteId.of(proposal.routeId), this._voyageNumber),
     );
   }
@@ -469,20 +506,14 @@ export class Booking {
     if (this._status !== BookingStatus.CONFIRMED)
       throw new IllegalBookingStateError('cannot load an unconfirmed booking');
     this._status = BookingStatus.LOADED;
-    this._domainEvents.push(new CargoLoadedOnVessel(this._bookingNumber));
+    this.registerEvent(new CargoLoadedOnVessel(this._bookingNumber));
   }
 
   cancel(reason: string): void {
     if (this._status === BookingStatus.LOADED)
       throw new IllegalBookingStateError('cannot cancel a loaded booking');
     this._status = BookingStatus.CANCELED;
-    this._domainEvents.push(new BookingCanceled(this._bookingNumber, reason));
-  }
-
-  pullDomainEvents(): DomainEvent[] {
-    const events = [...this._domainEvents];
-    this._domainEvents.length = 0;
-    return events;
+    this.registerEvent(new BookingCanceled(this._bookingNumber, reason));
   }
 
   get bookingNumber(): BookingNumber { return this._bookingNumber; }
@@ -575,7 +606,7 @@ export class CargoItem {
 
 ```typescript
 // domain/model/aggregates/shipment.aggregate.ts
-export class Shipment {
+export class Shipment extends AggregateRoot {
   private readonly _cargo: CargoItem[] = [];
 
   constructor(private readonly _id: ShipmentId) {}
@@ -758,7 +789,7 @@ Split the application layer along the command/query line (CQRS as a *design prin
 
 ### Why every port needs a token
 
-TypeScript interfaces are erased at compile time — nothing survives to runtime for Nest's DI container to resolve. Spring can inject `BookingCommandService` by type because the JVM keeps that type information; Nest cannot. Every port, without exception, needs an explicit token:
+TypeScript interfaces are erased at compile time, so nothing survives for Nest's DI to resolve — every port needs an explicit token.
 
 ```typescript
 // domain/services/booking-command.service.ts
@@ -770,9 +801,9 @@ export interface BookingCommandService {
 }
 ```
 
-### Prefer distinct method names over TypeScript overloads for queries
+### Name query handlers after what they return
 
-TypeScript interface overloads require the *implementing class* to declare every overloaded signature verbatim before its single implementation body — easy to under-implement, and it doesn't buy the readability Java-style overloading does, since call sites are already disambiguated by the query type they pass in. Name each query handler after what it returns instead:
+TypeScript interface overloads force the implementing class to repeat every signature and aren't clearer than distinct names. Name each handler after what it returns:
 
 ```typescript
 // domain/services/booking-query.service.ts
@@ -834,7 +865,7 @@ export class BookingCommandServiceImpl implements BookingCommandService {
 }
 ```
 
-**Why `run()` instead of a `start()` / `complete()` pair.** ASP.NET's `IUnitOfWork.CompleteAsync()` works because EF Core defers writes to `SaveChangesAsync()` and commits them together. TypeORM has no such deferred context — `save()` commits immediately. An AsyncLocalStorage-scoped `run()` is the honest equivalent: everything inside the callback shares one `EntityManager` (repositories read it from `TransactionContext.manager`), and `run()` commits when the callback resolves or rolls back on throw. If you'd rather keep the two-phase `start()` / `complete()` / `rollback()` shape, the `typeorm-transactional` package (or `@nestjs-cls`) provides exactly that ambient style out of the box; the port above is sufficient on its own and avoids the extra dependency.
+**Why `run()` instead of `start()` / `complete()`.** ASP.NET's `CompleteAsync()` relies on EF Core deferring writes to `SaveChangesAsync()`; TypeORM has no deferred context, so `save()` commits immediately. The AsyncLocalStorage-scoped `run()` is the TypeORM equivalent — everything inside shares one `EntityManager`, and `run()` commits when the callback resolves or rolls back on throw. The `typeorm-transactional` package (or `@nestjs-cls`) offers the two-phase `start()`/`complete()` style if you prefer it.
 
 ### Query service — reads, no mutations
 
@@ -921,9 +952,9 @@ export class BookingPersistenceAssembler {
   toDomain(orm: BookingOrmEntity): Booking {
     return Booking.rehydrate({
       bookingNumber: BookingNumber.of(orm.bookingNumber),
-      customerId: new CustomerId(orm.customerId),
-      origin: new PortCode(orm.origin),
-      destination: new PortCode(orm.destination),
+      customerId: CustomerId.of(orm.customerId),
+      origin: PortCode.of(orm.origin),
+      destination: PortCode.of(orm.destination),
       status: parseBookingStatus(orm.status),
       voyageNumber: orm.voyageNumber ? VoyageNumber.of(orm.voyageNumber) : null,
       cargo: new Cargo(
@@ -1053,7 +1084,15 @@ The persistence assembler translates `Shipment.cargo` → `CargoItemOrmEntity[]`
 
 ### When to skip the port
 
-Same YAGNI judgment as Spring, adjusted for the fact that a token is unavoidable either way in Nest: if the "repository" has no business-relevant finders beyond CRUD and the module will only ever have one persistence technology, injecting `Repository<BookingOrmEntity>` directly into the command service and skipping `BookingRepository`/assembler entirely is a legitimate simplification for a small, low-invariant module. Introduce the port once the module has real finders named in the ubiquitous language, or once a second implementation (e.g., an in-memory test double) earns its keep.
+**Why the default differs from Spring.** Spring can keep JPA on the aggregate root because JPA is metadata-only, so `@Entity` IS the domain model and a Spring Data interface is a first-class abstraction — direct injection is genuinely the clean baseline. TypeORM's decorators instead carry runtime relation and lazy-loading behavior, so Nest keeps the domain aggregate as a plain class and the ORM entity as a separate class; something must translate between them, and that translation belongs behind a port. Hence the port + assembler + adapter is the Nest default, not an optional layer.
+
+Given that, skipping the port is a genuine simplification, not the baseline. It's reasonable when:
+
+1. **No business rules in the repository.** It only offers CRUD finders and a straight save — no domain logic to protect.
+2. **No swappability or test boundary.** One persistence technology, and the test double would add no coverage beyond the real adapter.
+3. **The module is small and low-invariant** — the domain aggregate is little more than data.
+
+Introduce the port the moment the module has finders named in the ubiquitous language, or once a second implementation (e.g., an in-memory test double) earns its keep.
 
 ### Test: repository round-trip
 
@@ -1205,6 +1244,82 @@ Acceptable in a monolith when:
 
 In microservices, these facade interfaces become HTTP clients (`HttpModule`) or gRPC clients — the interface and token stay, the adapter changes from in-process to network call, and the circular-module problem disappears with it (each service only imports its own facade implementation).
 
+### Cross-context reference data
+
+Some contexts need **read-only data** owned by another context to enrich their responses (e.g., Booking shows the vessel name; Tracking shows the port address). Apply this pattern:
+
+1. **Provider VO:** The provider defines a simple class/record in `domain/model/valueobjects/` (e.g., `VesselInfo`). If the VO is used by 3+ bounded contexts, place it in `shared/domain/model/valueobjects/`.
+2. **Facade returns the VO:** The provider's `XxxContextFacade` returns the VO directly, or returns primitives when only a single field is needed.
+3. **Consumer mapping:** The consumer's `ExternalXxxService` (in `application/internal/outboundservices/acl/`) calls the facade. If the consumer needs only a subset of fields, it maps to its own minimal VO in `domain/model/valueobjects/`.
+4. **No domain services:** Non-aggregate reference data does NOT get its own service interface in `domain/services/`. The `ExternalXxxService` is an application-layer service, not a domain service.
+
+**Primitives (single field needed):**
+
+```typescript
+// Provider: VesselSchedulingFacade
+fetchVesselName(voyageNumber: string): Promise<string | null>;
+
+// Consumer: ExternalVesselService
+async fetchVesselName(voyageNumber: string): Promise<string> {
+  return (await this.scheduling.fetchVesselName(voyageNumber)) ?? '';
+}
+```
+
+**Provider VO → Consumer minimal VO (multiple fields needed):**
+
+```typescript
+// Provider: domain/model/valueobjects/vessel-info.value-object.ts
+export class VesselInfo {
+  constructor(
+    public readonly id: string,
+    public readonly name: string,
+    public readonly imoNumber: string,
+    public readonly active: boolean,
+  ) {}
+}
+
+// Provider: VesselSchedulingFacade
+fetchVesselInfo(vesselId: string): Promise<VesselInfo>;
+
+// Consumer: domain/model/valueobjects/vessel-booking-info.value-object.ts
+export class VesselBookingInfo {
+  constructor(
+    public readonly vesselId: string,
+    public readonly name: string,
+    public readonly imoNumber: string,
+  ) {}
+}
+
+// Consumer: ExternalVesselService
+async fetchVesselBookingInfo(vesselId: string): Promise<VesselBookingInfo | null> {
+  const info = await this.scheduling.fetchVesselInfo(vesselId);
+  return info ? new VesselBookingInfo(info.id, info.name, info.imoNumber) : null;
+}
+```
+
+**Shared VO (used by 3+ contexts):**
+
+```typescript
+// shared/domain/model/valueobjects/voyage-context.value-object.ts
+export class VoyageContext {
+  constructor(
+    public readonly voyageNumber: string,
+    public readonly vesselId: string,
+    public readonly routeId: string,
+  ) {}
+}
+
+// Provider: VesselSchedulingFacade
+fetchVoyageContext(voyageNumber: string): Promise<VoyageContext>;
+
+// Consumer: ExternalVesselService
+fetchVoyageContext(voyageNumber: string): Promise<VoyageContext> {
+  return this.scheduling.fetchVoyageContext(voyageNumber);
+}
+```
+
+This keeps a single point of access per external context. When moving to microservices, the `ExternalXxxService` becomes an HTTP client while the VOs stay unchanged.
+
 ## Interfaces (REST)
 
 Three parts: **`resources`** (DTOs), **`transform`** (assemblers), and the **controller**.
@@ -1243,9 +1358,9 @@ export class BookingResource {
 export class PlaceBookingCommandFromResourceAssembler {
   static toCommand(resource: PlaceBookingResource): PlaceBookingCommand {
     return new PlaceBookingCommand(
-      new CustomerId(resource.customerId),
-      new PortCode(resource.origin),
-      new PortCode(resource.destination),
+      CustomerId.of(resource.customerId),
+      PortCode.of(resource.origin),
+      PortCode.of(resource.destination),
       new CargoWeight(resource.cargoWeight, resource.weightUnit),
       resource.cargoDescription,
       resource.hazardous,
@@ -1370,7 +1485,7 @@ A **global** filter in `shared/` (see [The shared kernel](#the-shared-kernel)) m
 
 - **Repository.** `TypeOrmRepository<OrmEntity>` injected inside the adapter is simplest; add the domain port + assembler once the module has real ubiquitous-language finders or needs a swappable/in-memory implementation for tests.
 
-- **TypeORM in the domain.** Never. Unlike JPA in the Spring reference, TypeORM decorators are not treated as an acceptable trade-off here — the split between `domain/model/aggregates/*.aggregate.ts` and `infrastructure/persistence/typeorm/entities/*.orm-entity.ts` is the default, not the "maximum isolation" option.
+- **TypeORM in the domain.** Not recommended — and for the same reason that makes the repository port the default here (see [Repositories](#repositories)). TypeORM decorators carry runtime relation and lazy-loading behavior, so the domain aggregate stays a plain class and the ORM entity a separate class; the split is the default, not the "maximum isolation" option.
 
 - **Parsing persisted enums.** Always through an explicit `parseX()` function (see [Repositories](#repositories)), never an `as` cast — the assembler is the one place untrusted storage data re-enters the domain, so it's the one place validation can't be skipped.
 
@@ -1378,11 +1493,11 @@ Non-negotiable: business rules and invariants stay in the domain, and the domain
 
 ## A note on `@nestjs/cqrs`
 
-`@nestjs/cqrs` is an official Nest package providing `CommandBus`, `QueryBus`, `EventBus`, and an `AggregateRoot` base class with `apply()`/`mergeObjectContext()`. It is **not part of Nest's core** and is not a de facto standard the way, say, `class-validator` is for input validation — plenty of production DDD codebases in Nest skip it entirely and use the explicit-service pattern shown throughout this file, the same one Spring Boot uses.
+`@nestjs/cqrs` provides `CommandBus`, `QueryBus`, `EventBus`, and an `AggregateRoot` base with `apply()`/`mergeObjectContext()`. It is **not part of Nest's core** and is not a de facto standard — plenty of DDD codebases in Nest skip it and use the explicit-service pattern shown throughout this file.
 
-This reference does **not** use it by default, for the same reason `tactical-patterns.md` treats CQRS-the-pattern as something to apply "per bounded context, where it earns its keep" rather than universally: the bus hides *which* handler answers a command behind `@CommandHandler(X)` + a runtime dispatch, and its `AggregateRoot`/`IEvent`/`ICommand` types pull `@nestjs/cqrs` directly into `domain/`, which the rest of this skill's stack references avoid.
+This reference does **not** use it by default: the bus hides which handler answers a command behind `@CommandHandler(X)` + a runtime dispatch, and its `AggregateRoot`/`IEvent`/`ICommand` types pull `@nestjs/cqrs` into `domain/`, which the rest of this skill avoids.
 
-If a project already commits to it — often because it also wants Event Sourcing, where `@nestjs/cqrs` genuinely reduces boilerplate — the mapping is:
+If a project already commits to it — often because it also wants Event Sourcing, where it genuinely reduces boilerplate — the mapping is:
 
 | This reference | `@nestjs/cqrs` |
 |---|---|
@@ -1430,7 +1545,7 @@ A domain test that needs `Test.createTestingModule` to pass is usually a sign bu
 | DDD concept | NestJS idiom |
 | --- | --- |
 | Entity (internal) | Plain class in `domain/model/entities/`, id assigned via its own VO factory (`CargoId.generate()`), behavior methods |
-| Aggregate Root | Plain class in `domain/model/aggregates/`, no decorators, private constructor with `place()`/`rehydrate()` static factories, `pullDomainEvents()` for event drainage, every field a behavior method can set (e.g. `voyageNumber` set by `confirm()`) lives on the aggregate — never only on the ORM entity |
+| Aggregate Root | Plain class extending `AggregateRoot` (in `domain/model/aggregates/`), no decorators, private constructor with `place()`/`rehydrate()` static factories, event drain inherited from the base, every field a behavior method can set (e.g. `voyageNumber` set by `confirm()`) lives on the aggregate — never only on the ORM entity |
 | Composite aggregate collection | Root owns a collection of children with identity/behavior, builds them via create-methods (`addContainer` with dedup), derives whole-state (`isReadyForLoading()`, `confirm()`) from the children — see `design-patterns-arch-patterns.md`; persisted as a parent + child table (`@OneToMany`/`@ManyToOne`), not a `jsonb` blob |
 | Value Object | Plain class, `private readonly`/`readonly` fields, validated in constructor, `equals()` |
 | Typed identifier | Plain class wrapping the raw value, validated in constructor — applied to every identifier, including internal-entity ids |

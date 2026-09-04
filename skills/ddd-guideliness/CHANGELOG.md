@@ -4,6 +4,20 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.6] — 2026-09-02
+
+### Added
+
+- `nestjs.md`: New "Cross-context reference data" subsection under the anti-corruption layer — provider VO, consumer minimal VO, and Shared-Kernel VO (3+ contexts) variants, matching `spring-boot.md`.
+- `nestjs.md`: Shared kernel gains an `AggregateRoot` domain base (hosts the domain-event buffer and `pullDomainEvents()`); `Booking` and `Shipment` extend it. The unused `BaseEntity` interface was removed.
+- `nestjs.md`: Added `ShipmentId` value object; new "VO construction conventions" rule — quantity VOs use a public constructor, identifier VOs a `private` constructor with `of()`/`generate()` (converted `CustomerId`/`PortCode` accordingly).
+
+### Changed
+
+- `nestjs.md`: Repository timing and default now explain *why* it differs from Spring — JPA-on-entity (metadata-only) makes direct injection the Spring baseline, while TypeORM's runtime decorators force the plain-domain + separate-ORM split, so the port + assembler is the Nest default. `When to skip the port` reframed to Spring-style criteria; "TypeORM in the domain" softened accordingly.
+- `nestjs.md`: Compressed rationale asides (why every port needs a token, query handler naming, why `run()` not `start()`/`complete()`, why not decorate the domain class, `@nestjs/cqrs` note) to one line + a pointer to the parent reference, bringing the tone in line with `spring-boot.md`.
+- `SKILL.md`: Version bumped to `1.0.6`.
+
 ## [1.0.5] — 2026-09-01
 
 ### Added
