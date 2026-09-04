@@ -15,6 +15,7 @@ Format is based on [Keep a Changelog](https://keepachangelog.com/), and this ski
 ### Changed
 
 - `nestjs.md`: Repository timing and default now explain *why* it differs from Spring — JPA-on-entity (metadata-only) makes direct injection the Spring baseline, while TypeORM's runtime decorators force the plain-domain + separate-ORM split, so the port + assembler is the Nest default. `When to skip the port` reframed to Spring-style criteria; "TypeORM in the domain" softened accordingly.
+- `nestjs.md`: Hardened the Composite `Shipment` — child transitions go through the root (`confirmCargo()`), the root carries a real `ShipmentStatus` set by `confirm()` (raising `ShipmentConfirmed`), and `ShipmentOrmEntity` persists the status.
 - `nestjs.md`: Compressed rationale asides (why every port needs a token, query handler naming, why `run()` not `start()`/`complete()`, why not decorate the domain class, `@nestjs/cqrs` note) to one line + a pointer to the parent reference, bringing the tone in line with `spring-boot.md`.
 - `SKILL.md`: Version bumped to `1.0.6`.
 

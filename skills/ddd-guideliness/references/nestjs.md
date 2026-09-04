@@ -83,6 +83,16 @@ Unlike the interfaces used only within `application` (command/query services), a
 A `shared/` folder holds the small **shared kernel** every module reuses — base classes, a common response resource, cross-cutting config. Keep it small and stable; it must never hold business rules.
 
 ```typescript
+// shared/domain/model/domain-event.ts
+// Every domain event implements this — see "Domain events" for why this is
+// mandatory rather than `unknown` or `any`.
+export interface DomainEvent {
+  readonly eventName: string;
+  readonly occurredAt: Date;
+}
+```
+
+```typescript
 // shared/domain/model/aggregate-root.ts
 // The domain counterpart of Spring's AbstractAggregateRoot: every aggregate root
 // raises domain events into this buffer and drains them after the unit of work
@@ -99,16 +109,6 @@ export abstract class AggregateRoot {
     this._domainEvents.length = 0;
     return events;
   }
-}
-```
-
-```typescript
-// shared/domain/model/domain-event.ts
-// Every domain event implements this — see "Domain events" for why this is
-// mandatory rather than `unknown` or `any`.
-export interface DomainEvent {
-  readonly eventName: string;
-  readonly occurredAt: Date;
 }
 ```
 
@@ -304,7 +304,7 @@ export class CustomerId {
 }
 ```
 
-**VO construction conventions.** Quantity VOs — a measurement like `CargoWeight` — use a public constructor and validate in it. Identifier VOs — `BookingNumber`, `CustomerId`, `PortCode`, `VoyageNumber`, `RouteId`, `CargoId`, `ShipmentId` — use a `private` constructor plus a static `of()` (parse + validate) and `generate()` where identity is created. That keeps the coercion boundary explicit: a `CustomerId` is only ever built from a named source, not from a `new` scattered through an orchestrator.
+**VO construction conventions.** Quantity VOs — a measurement like `CargoWeight` — use a public constructor and validate in it. Identifier VOs — `BookingNumber`, `CustomerId`, `PortCode`, `VoyageNumber`, `RouteId`, `CargoId`, `ShipmentId` — use a `private` constructor plus a static `of()` (parse + validate) and `generate()` where identity is created. That keeps the coercion boundary explicit: a `CustomerId` is only ever built from a named source, not from a `new` scattered through an orchestrator. *Reference-data* carriers — `VesselInfo`, `VesselBookingInfo`, `VoyageContext` (see [Cross-context reference data](#cross-context-reference-data)) — are read-only DTOs at an ACL boundary: a public constructor is correct there, since they carry no identity or invariants.
 
 ```typescript
 // domain/model/valueobjects/voyage-number.value-object.ts
@@ -606,8 +606,11 @@ export class CargoItem {
 
 ```typescript
 // domain/model/aggregates/shipment.aggregate.ts
+export enum ShipmentStatus { PLACED = 'PLACED', CONFIRMED = 'CONFIRMED', LOADED = 'LOADED' }
+
 export class Shipment extends AggregateRoot {
   private readonly _cargo: CargoItem[] = [];
+  private _status: ShipmentStatus = ShipmentStatus.PLACED;
 
   constructor(private readonly _id: ShipmentId) {}
 
@@ -629,34 +632,56 @@ export class Shipment extends AggregateRoot {
     this._cargo.push(new CargoItem(CargoId.generate(), reference, weight, temperature, 'reefer'));
   }
 
+  // Child transitions also go through the root — the only entry point. The
+  // getter below returns a copy of the collection, so confirming happens here.
+  confirmCargo(cargoId: CargoId): void {
+    const cargo = this._cargo.find((c) => c.id.equals(cargoId));
+    if (!cargo) throw new UnknownCargoError('cargo not found in this shipment');
+    cargo.confirm();
+  }
+
   // Composite rule: the whole's invariant is *defined by* the parts, not a flag
   // someone must keep in sync. isReadyForLoading() is a derived getter...
   isReadyForLoading(): boolean {
     return this._cargo.length > 0 && this._cargo.every((c) => c.status === CargoStatus.DECLARED);
   }
 
-  // ...and confirm() is a guarded transition that reads the children's state.
+  // ...and confirm() is a guarded transition that reads the children's state,
+  // then sets the root's own status and raises the event.
   confirm(): void {
     if (this._cargo.length === 0 || !this._cargo.every((c) => c.status === CargoStatus.CONFIRMED))
       throw new IncompleteShipmentError('all cargo must be confirmed before the shipment can be confirmed');
+    this._status = ShipmentStatus.CONFIRMED;
+    this.registerEvent(new ShipmentConfirmed(this._id));
   }
 
   hasTrackableCargo(): boolean { return this._cargo.some((c) => c.isTrackable()); }
   get cargo(): CargoItem[] { return [...this._cargo]; }
+  get status(): ShipmentStatus { return this._status; }
 
   private exists(reference: string): boolean {
     return this._cargo.some((c) => c.reference === reference);
   }
 }
+
+// domain/model/events/shipment-confirmed.event.ts
+export class ShipmentConfirmed implements DomainEvent {
+  static readonly eventName = 'ShipmentConfirmed';
+  readonly eventName = ShipmentConfirmed.eventName;
+  readonly occurredAt = new Date();
+
+  constructor(public readonly shipmentId: ShipmentId) {}
+}
+}
 ```
 
-A service calling `new CargoItem(...)` directly can't exist — the only entry points are the root's create-methods, so a duplicate reference or negative tonnage is unrepresentable. Compare with `spring-boot.md`'s `Route` + `List<RouteStop>`: the same "root owns a collection" shape.
+A service calling `new CargoItem(...)` or `cargo.confirm()` directly can't exist — creation and child transitions go through the root (`addContainer`, `confirmCargo`), so a duplicate reference, negative tonnage, or an out-of-order confirmation is unrepresentable. Compare with `spring-boot.md`'s `Route` + `List<RouteStop>`: the same "root owns a collection" shape.
 
 ## Domain events
 
-Model each event as a plain class, named in past tense, carrying only the data subscribers need. Every event implements the shared `DomainEvent` interface introduced in [The shared kernel](#the-shared-kernel) — this is what makes `pullDomainEvents()` return a real type instead of `unknown[]`, and what gives emitter and handler a single source of truth for the event's name instead of relying on `event.constructor.name` (which is not guaranteed stable through minification/bundling, and would not even compile against an `unknown` array under `strict: true`).
+Model each event as a plain class, named in past tense, carrying only the data subscribers need. Every event implements `DomainEvent` and carries a static `eventName` (`constructor.name` is not stable under minification, and an `unknown` array would not type-check under `strict: true`).
 
-Event payloads carry the same typed value objects as everywhere else in the domain — never bare strings for anything with business-facing identity. `spring-boot.md`'s `BookingConfirmed` types both cross-context references (`RouteId routeId`, `VoyageNumber vessel`); this reference does the same, rather than letting the one fully-shown event in the document be the one place VOs quietly get unwrapped back into strings:
+Payloads carry the same typed VOs as everywhere else in the domain — never bare strings for business-facing identity (mirroring `spring-boot.md`).
 
 ```typescript
 // domain/model/events/booking-confirmed.event.ts
@@ -1050,6 +1075,7 @@ The Composite `Shipment` from [Entities and aggregate roots](#entities-and-aggre
 @Entity('shipments')
 export class ShipmentOrmEntity extends AuditableOrmEntity {
   @PrimaryColumn() id: string;
+  @Column() status: string;
   @OneToMany(() => CargoItemOrmEntity, (cargo) => cargo.shipment, { cascade: true })
   cargo: CargoItemOrmEntity[];
 }
@@ -1073,7 +1099,7 @@ export class CargoItemOrmEntity extends AuditableOrmEntity {
 }
 ```
 
-The persistence assembler translates `Shipment.cargo` → `CargoItemOrmEntity[]` and back — same pattern as `BookingPersistenceAssembler`, with each child's `status` parsed through a `parseCargoStatus()` function (never `as`-cast).
+The persistence assembler translates `Shipment.cargo` → `CargoItemOrmEntity[]` and back — same pattern as `BookingPersistenceAssembler`, with the root's `status` and each child's `status` parsed through `parseShipmentStatus()` / `parseCargoStatus()` (never `as`-cast).
 
 **JSONB is the exception, not the default.** `Booking` stores its single `Cargo` as a `jsonb` column because it's effectively a value-object-shaped detail: one per booking, no per-child identity, no separate querying need. That's fine. The moment children have identity, behavior, or need to be filtered on (`findConfirmedForVoyage` filters on real columns), a `jsonb` blob stops working: it isn't queryable or indexable per-child, and it hides the aggregate's shape from the database. The trade-off plain and simple:
 
@@ -1503,7 +1529,7 @@ If a project already commits to it — often because it also wants Event Sourcin
 |---|---|
 | `BookingCommandService.handle(command)` (explicit interface + token) | `CommandBus.execute(command)` + `@CommandHandler(PlaceBookingCommand)` |
 | `BookingQueryService.getByBookingNumber(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingQuery)` |
-| `booking.pullDomainEvents()` + manual `EventEmitter2.emit()` after save | `Booking extends AggregateRoot`, `this.apply(event)`, `publisher.mergeObjectContext(booking)`, `booking.commit()` |
+| `booking.pullDomainEvents()` + manual `EventEmitter2.emit()` after the unit of work commits | `Booking extends AggregateRoot`, `this.apply(event)`, `publisher.mergeObjectContext(booking)`, `booking.commit()` |
 | `@OnEvent(BookingConfirmed.eventName)` | `@EventsHandler(BookingConfirmed)` implementing `IEventHandler` |
 
 Adopt it deliberately, as a team decision with the coupling trade-off stated explicitly — not as the default idiom for "doing CQRS in Nest."
