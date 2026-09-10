@@ -249,6 +249,15 @@ Command Query Responsibility Segregation separates the model that **changes** st
 - **Write side:** Booking aggregate handles `ConfirmBooking`, publishes `BookingConfirmed`
 - **Read side:** TrackingProjection listens to `BookingConfirmed`, `CargoLoadedOnVessel`, etc., maintaining a denormalized table: `(bookingNumber, currentPort, status, eta)`
 
+### Naming commands, queries, events (and handlers)
+
+Name the intent after what it does, in the ubiquitous language:
+
+- **Command** — `Action + Target + Command`: `PlaceBookingCommand`, `ConfirmBookingCommand`, `CancelBookingCommand`.
+- **Query** — `Action + Target + Criteria + Query`: `GetBookingByIdQuery`, `FindBookingsForVoyageQuery`.
+- **Domain event** — `Target + PastAction`: `BookingConfirmed`, `BookingPlaced`, `CargoLoadedOnVessel`. Append `Event` only on collision with a non-event of the same name (e.g., a `BookingConfirmed` aggregate or command already exists).
+- **Event handler** — `<EventName> + EventHandler`: `BookingConfirmedEventHandler`. One handler per event per module; handlers live in the module that raised the event and call other contexts through the ACL, never by subscribing across modules.
+
 ### When to use it
 
 - Read and write needs genuinely diverge
@@ -291,10 +300,10 @@ If testing a piece of domain logic requires a database or web context, the logic
 | Value Object | Magnitude with rules; no identity | Immutable, validate at construction |
 | Aggregate | Group of objects that must stay consistent in one transaction | Small, root-only access, reference other aggregates by ID |
 | Aggregate Root | Referenced by ID from outside the aggregate | Only the root enforces invariants |
-| Domain Event | Other parts need to react to something that happened | Past tense, immutable, enough data to avoid round-trips |
+| Domain Event | Other parts need to react to something that happened | Past tense (`Target + PastAction`), immutable, enough data to avoid round-trips; `Event` suffix only on collision |
 | Domain Service | Logic spans multiple entities or has no natural home | Stateless, in the domain layer |
 | Repository | Persisting and retrieving whole aggregates | One per aggregate root, interface in domain |
 | Factory | Construction involves decisions and rules | Named method, always produces valid objects |
-| Command | Write side of CQRS | Immutable intent, validated at construction |
-| Query | Read side of CQRS | Read-only, no side effects |
+| Command | Write side of CQRS | Immutable intent, validated at construction, named `Action + Target + Command` |
+| Query | Read side of CQRS | Read-only, no side effects, named `Action + Target + Criteria + Query` |
 | Read Model | Optimized querying across aggregates | Rebuilt from events, eventually consistent |

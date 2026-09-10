@@ -231,7 +231,11 @@ Model value objects as **immutable** classes: `private readonly` fields, validat
 
 ```typescript
 // domain/model/valueobjects/cargo-weight.value-object.ts
-export enum WeightUnit { TONNES = 'TONNES', KILOGRAMS = 'KILOGRAMS' }
+// Closed sets use an `as const` object + type union — the TS equivalent of
+// Spring's `enum`. Do not use `export enum`: it is non-erasable, breaks under
+// `isolatedModules` / `erasableSyntaxOnly`, and diverges from `angular.md`.
+export const WeightUnit = { TONNES: 'TONNES', KILOGRAMS: 'KILOGRAMS' } as const;
+export type WeightUnit = typeof WeightUnit[keyof typeof WeightUnit];
 
 export class CargoWeight {
   constructor(
@@ -251,11 +255,11 @@ export class CargoWeight {
   }
 }
 
-// Parse untrusted input (persistence, external APIs) into the enum explicitly.
+// Parse untrusted input (persistence, external APIs) into the union set explicitly.
 // Never `as WeightUnit` — a corrupt DB value would silently pass as valid.
 export function parseWeightUnit(value: string): WeightUnit {
-  if (!(value in WeightUnit)) throw new Error(`invalid weight unit: ${value}`);
-  return WeightUnit[value as keyof typeof WeightUnit];
+  if (!(Object.values(WeightUnit) as string[]).includes(value)) throw new Error(`invalid weight unit: ${value}`);
+  return value as WeightUnit;
 }
 ```
 
@@ -436,7 +440,8 @@ The constructor below is for **creating a new booking** — it always starts `PL
 
 ```typescript
 // domain/model/aggregates/booking.aggregate.ts
-export enum BookingStatus { PLACED = 'PLACED', CONFIRMED = 'CONFIRMED', LOADED = 'LOADED', CANCELED = 'CANCELED' }
+export const BookingStatus = { PLACED: 'PLACED', CONFIRMED: 'CONFIRMED', LOADED: 'LOADED', CANCELED: 'CANCELED' } as const;
+export type BookingStatus = typeof BookingStatus[keyof typeof BookingStatus];
 
 export class Booking extends AggregateRoot {
   // Private: only reachable through the two named factories below, so a
@@ -554,7 +559,7 @@ export class Cargo {
 | Before | After | Saved us from |
 |---|---|---|
 | `id: string` from `@PrimaryGeneratedColumn` — mixable with any other string | `BookingNumber` — typed, validated | The $4M ship-to-wrong-port incident (see `strategic-design.md`) |
-| `status: string` — typo = broken flow | `BookingStatus` enum — compiler-enforced | Three failed deployments |
+| `status: string` — typo = broken flow | `BookingStatus` union (`as const`) — compiler-enforced | Three failed deployments |
 | Rules in a service layer — bypassable | Rules in the aggregate — unbreakable | The booking canceled after loading |
 | Domain class decorated with `@Entity` — TypeORM leaks into behavior | Domain class plain, ORM entity separate | Lazy-loading exceptions in unit tests |
 | Single public constructor doubling as "create" and "reload" | `place()` vs `rehydrate()` — distinct, unambiguous factories | A reload path accidentally re-raising `BookingPlaced` |
@@ -581,7 +586,8 @@ describe('Booking', () => {
 
 ```typescript
 // domain/model/entities/cargo-item.entity.ts
-export enum CargoStatus { DECLARED = 'DECLARED', CONFIRMED = 'CONFIRMED', LOADED = 'LOADED' }
+export const CargoStatus = { DECLARED: 'DECLARED', CONFIRMED: 'CONFIRMED', LOADED: 'LOADED' } as const;
+export type CargoStatus = typeof CargoStatus[keyof typeof CargoStatus];
 
 export class CargoItem {
   constructor(
@@ -606,7 +612,8 @@ export class CargoItem {
 
 ```typescript
 // domain/model/aggregates/shipment.aggregate.ts
-export enum ShipmentStatus { PLACED = 'PLACED', CONFIRMED = 'CONFIRMED', LOADED = 'LOADED' }
+export const ShipmentStatus = { PLACED: 'PLACED', CONFIRMED: 'CONFIRMED', LOADED: 'LOADED' } as const;
+export type ShipmentStatus = typeof ShipmentStatus[keyof typeof ShipmentStatus];
 
 export class Shipment extends AggregateRoot {
   private readonly _cargo: CargoItem[] = [];
@@ -681,6 +688,8 @@ A service calling `new CargoItem(...)` or `cargo.confirm()` directly can't exist
 
 Model each event as a plain class, named in past tense, carrying only the data subscribers need. Every event implements `DomainEvent` and carries a static `eventName` (`constructor.name` is not stable under minification, and an `unknown` array would not type-check under `strict: true`).
 
+**Naming:** `Event` is `Target + PastAction` (`BookingConfirmed`, `CargoLoadedOnVessel`); append `Event` only on collision with a non-event of the same name. `Event handlers` are `<EventName> + EventHandler` (`BookingConfirmedEventHandler` in `application/internal/eventhandlers/`).
+
 Payloads carry the same typed VOs as everywhere else in the domain — never bare strings for business-facing identity (mirroring `spring-boot.md`).
 
 ```typescript
@@ -710,9 +719,9 @@ private publishDomainEvents(booking: Booking): void {
 ```
 
 ```typescript
-// application/internal/eventhandlers/booking-confirmed.handler.ts
+// application/internal/eventhandlers/booking-confirmed.event-handler.ts
 @Injectable()
-export class BookingConfirmedHandler {
+export class BookingConfirmedEventHandler {
   @OnEvent(BookingConfirmed.eventName)
   async handle(event: BookingConfirmed): Promise<void> {
     // trigger downstream: notify Tracking, update Route assignment
@@ -741,9 +750,9 @@ For handlers with real external side effects (sending an email, calling another 
 `@nestjs/event-emitter` has no module isolation: `EventEmitterModule.forRoot()` registers one `EventEmitter2` for the **entire app**, and any `@OnEvent(name)` anywhere receives it, regardless of which module emitted it. That makes it tempting for another bounded context's module to subscribe directly:
 
 ```typescript
-// ✗ tracking/application/internal/eventhandlers/booking-confirmed.handler.ts
+// ✗ tracking/application/internal/eventhandlers/booking-confirmed.event-handler.ts
 @Injectable()
-export class TrackingBookingConfirmedHandler {
+export class TrackingBookingConfirmedEventHandler {
   @OnEvent(BookingConfirmed.eventName)
   async handle(event: BookingConfirmed): Promise<void> { /* ... */ } // imports Booking's own event + RouteId + VoyageNumber
 }
@@ -754,9 +763,9 @@ Don't. This is the same reversed dependency the [Anti-corruption layer](#anti-co
 **A `DomainEvent` is only ever handled by a `@OnEvent` listener inside the module that raised it.** When another context genuinely needs to know — per the context map, not per convenience — that in-module handler is the one that reacts, and it reacts by calling the other context through the **same ACL machinery already described**: an `External{Bc}Service` injecting that context's facade token, exactly as [Anti-corruption layer](#anti-corruption-layer) shows. No second event type, no new interface — this is a plain in-process call, because in a modular monolith the "other bounded context" is just another module in the same process, not a separate deployable talking over a broker:
 
 ```typescript
-// application/internal/eventhandlers/booking-confirmed.handler.ts
+// application/internal/eventhandlers/booking-confirmed.event-handler.ts
 @Injectable()
-export class BookingConfirmedHandler {
+export class BookingConfirmedEventHandler {
   // Same ExternalRoutingService shape as ExternalVesselService in the ACL
   // section — a facade token this handler injects, nothing event-specific.
   constructor(private readonly routing: ExternalRoutingService) {}
@@ -779,6 +788,8 @@ This is a narrower rule than it might look: the Shared Kernel threshold (a value
 
 Make **commands** and **queries** first-class types in the domain, as plain classes that validate their own input at construction. No `implements ICommand` from `@nestjs/cqrs` — see [A note on `@nestjs/cqrs`](#a-note-on-nestjscqrs).
 
+**Naming:** `Command` is `Action + Target + Command` (`PlaceBookingCommand`, `CancelBookingCommand`); `Query` is `Action + Target + Criteria + Query` (`GetBookingByIdQuery`, `FindBookingsForVoyageQuery`); the file mirrors the class (`place-booking.command.ts`, `get-booking-by-id.query.ts`). See `tactical-patterns.md` for the stack-agnostic rule.
+
 ```typescript
 // domain/model/commands/place-booking.command.ts
 export class PlaceBookingCommand {
@@ -794,11 +805,22 @@ export class PlaceBookingCommand {
     if (!origin || !destination) throw new Error('route required');
   }
 }
+
+// domain/model/commands/cancel-booking.command.ts
+export class CancelBookingCommand {
+  constructor(
+    public readonly bookingNumber: BookingNumber,
+    public readonly reason: string,
+  ) {
+    if (!bookingNumber) throw new Error('bookingNumber required');
+    if (!reason?.trim()) throw new Error('reason required');
+  }
+}
 ```
 
 ```typescript
-// domain/model/queries/get-booking.query.ts
-export class GetBookingQuery {
+// domain/model/queries/get-booking-by-id.query.ts
+export class GetBookingByIdQuery {
   constructor(public readonly bookingNumber: BookingNumber) {}
 }
 
@@ -835,7 +857,7 @@ TypeScript interface overloads force the implementing class to repeat every sign
 export const BOOKING_QUERY_SERVICE = Symbol('BOOKING_QUERY_SERVICE');
 
 export interface BookingQueryService {
-  getByBookingNumber(query: GetBookingQuery): Promise<Booking | null>;
+  getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null>;
   findForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
 }
 ```
@@ -900,7 +922,7 @@ export class BookingCommandServiceImpl implements BookingCommandService {
 export class BookingQueryServiceImpl implements BookingQueryService {
   constructor(@Inject(BOOKING_REPOSITORY) private readonly bookings: BookingRepository) {}
 
-  async getByBookingNumber(query: GetBookingQuery): Promise<Booking | null> {
+  async getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null> {
     return this.bookings.findByBookingNumber(query.bookingNumber);
   }
 
@@ -960,13 +982,13 @@ export class BookingOrmEntity extends AuditableOrmEntity {
 
 ### The assembler — orm-entity ⇄ domain aggregate
 
-Parse persisted strings into enums through an explicit function (`parseWeightUnit`, and the equivalent `parseBookingStatus` below) rather than an `as` cast — a cast lets a corrupted or manually-edited DB row silently pass through as a valid enum member; a parser throws where the corruption actually happened, not three call frames later.
+Parse persisted strings into union sets through an explicit function (`parseWeightUnit`, and the equivalent `parseBookingStatus` below) rather than an `as` cast — a cast lets a corrupted or manually-edited DB row silently pass through as a valid member; a parser throws where the corruption actually happened, not three call frames later.
 
 ```typescript
 // domain/model/aggregates/booking.aggregate.ts (addition, alongside BookingStatus)
 export function parseBookingStatus(value: string): BookingStatus {
-  if (!(value in BookingStatus)) throw new Error(`invalid booking status: ${value}`);
-  return BookingStatus[value as keyof typeof BookingStatus];
+  if (!(Object.values(BookingStatus) as string[]).includes(value)) throw new Error(`invalid booking status: ${value}`);
+  return value as BookingStatus;
 }
 ```
 
@@ -1099,7 +1121,23 @@ export class CargoItemOrmEntity extends AuditableOrmEntity {
 }
 ```
 
-The persistence assembler translates `Shipment.cargo` → `CargoItemOrmEntity[]` and back — same pattern as `BookingPersistenceAssembler`, with the root's `status` and each child's `status` parsed through `parseShipmentStatus()` / `parseCargoStatus()` (never `as`-cast).
+The persistence assembler translates `Shipment.cargo` → `CargoItemOrmEntity[]` and back — same pattern as `BookingPersistenceAssembler`, with the root's `status` and each child's `status` parsed through `parseShipmentStatus()` / `parseCargoStatus()` (never `as`-cast). Both follow the same `Object.values()` guard as `parseBookingStatus()`:
+
+```typescript
+// domain/model/aggregates/shipment.aggregate.ts (addition, alongside ShipmentStatus)
+export function parseShipmentStatus(value: string): ShipmentStatus {
+  if (!(Object.values(ShipmentStatus) as string[]).includes(value)) throw new Error(`invalid shipment status: ${value}`);
+  return value as ShipmentStatus;
+}
+```
+
+```typescript
+// domain/model/entities/cargo-item.entity.ts (addition, alongside CargoStatus)
+export function parseCargoStatus(value: string): CargoStatus {
+  if (!(Object.values(CargoStatus) as string[]).includes(value)) throw new Error(`invalid cargo status: ${value}`);
+  return value as CargoStatus;
+}
+```
 
 **JSONB is the exception, not the default.** `Booking` stores its single `Cargo` as a `jsonb` column because it's effectively a value-object-shaped detail: one per booking, no per-child identity, no separate querying need. That's fine. The moment children have identity, behavior, or need to be filtered on (`findConfirmedForVoyage` filters on real columns), a `jsonb` blob stops working: it isn't queryable or indexable per-child, and it hides the aggregate's shape from the database. The trade-off plain and simple:
 
@@ -1359,7 +1397,7 @@ export class PlaceBookingResource {
   @IsString() @IsNotEmpty() origin: string;
   @IsString() @IsNotEmpty() destination: string;
   @IsNumber() cargoWeight: number;
-  @IsEnum(WeightUnit) weightUnit: WeightUnit;
+  @IsIn(Object.values(WeightUnit)) weightUnit: WeightUnit;
   @IsString() cargoDescription: string;
   @IsBoolean() hazardous: boolean;
 }
@@ -1420,14 +1458,14 @@ export class BookingController {
   async placeBooking(@Body() resource: PlaceBookingResource): Promise<BookingResource> {
     const command = PlaceBookingCommandFromResourceAssembler.toCommand(resource);
     const bookingNumber = await this.commands.handle(command);
-    const booking = await this.queries.getByBookingNumber(new GetBookingQuery(bookingNumber));
+    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(bookingNumber));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
 
   @Get(':number')
   async getBooking(@Param('number') number: string): Promise<BookingResource> {
-    const booking = await this.queries.getByBookingNumber(new GetBookingQuery(BookingNumber.of(number)));
+    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(BookingNumber.of(number)));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
@@ -1513,7 +1551,7 @@ A **global** filter in `shared/` (see [The shared kernel](#the-shared-kernel)) m
 
 - **TypeORM in the domain.** Not recommended — and for the same reason that makes the repository port the default here (see [Repositories](#repositories)). TypeORM decorators carry runtime relation and lazy-loading behavior, so the domain aggregate stays a plain class and the ORM entity a separate class; the split is the default, not the "maximum isolation" option.
 
-- **Parsing persisted enums.** Always through an explicit `parseX()` function (see [Repositories](#repositories)), never an `as` cast — the assembler is the one place untrusted storage data re-enters the domain, so it's the one place validation can't be skipped.
+- **Parsing persisted union sets.** Always through an explicit `parseX()` function (see [Repositories](#repositories)), never an `as` cast — the assembler is the one place untrusted storage data re-enters the domain, so it's the one place validation can't be skipped.
 
 Non-negotiable: business rules and invariants stay in the domain, and the domain never depends on `interfaces`, `application`, or `infrastructure`.
 
@@ -1528,7 +1566,7 @@ If a project already commits to it — often because it also wants Event Sourcin
 | This reference | `@nestjs/cqrs` |
 |---|---|
 | `BookingCommandService.handle(command)` (explicit interface + token) | `CommandBus.execute(command)` + `@CommandHandler(PlaceBookingCommand)` |
-| `BookingQueryService.getByBookingNumber(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingQuery)` |
+| `BookingQueryService.getByBookingNumber(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingByIdQuery)` |
 | `booking.pullDomainEvents()` + manual `EventEmitter2.emit()` after the unit of work commits | `Booking extends AggregateRoot`, `this.apply(event)`, `publisher.mergeObjectContext(booking)`, `booking.commit()` |
 | `@OnEvent(BookingConfirmed.eventName)` | `@EventsHandler(BookingConfirmed)` implementing `IEventHandler` |
 
@@ -1540,7 +1578,7 @@ Match the test style to what the layer actually does:
 
 - **`domain`** — plain Jest unit tests, no `Test.createTestingModule`. Construct the aggregate via `Booking.place(...)`, call behavior, assert on state/exceptions/pulled events. Should run in milliseconds.
 - **`application`** — plain Jest tests with a hand-built mock satisfying the repository/port interface (no DI container needed — just pass the mock into the constructor), or `Test.createTestingModule` with `overrideProvider(BOOKING_REPOSITORY)` when you want Nest's DI wiring exercised too.
-- **`infrastructure`** — integration tests against a real Postgres via Testcontainers (preferred over sqlite for TypeORM, since column types and constraints diverge): confirm mappings, typed-id round-trips, enum parsing on corrupt/legacy data, and finders (including ones that filter on real columns, like `findConfirmedForVoyage`).
+- **`infrastructure`** — integration tests against a real Postgres via Testcontainers (preferred over sqlite for TypeORM, since column types and constraints diverge): confirm mappings, typed-id round-trips, union-set parsing on corrupt/legacy data, and finders (including ones that filter on real columns, like `findConfirmedForVoyage`).
 - **`interfaces`** — `Test.createTestingModule` + `supertest` against the compiled Nest app, or a sliced test that mocks the command/query service tokens and calls the controller method directly for faster, non-HTTP tests.
 
 A domain test that needs `Test.createTestingModule` to pass is usually a sign business logic leaked into an `@Injectable()`.
@@ -1555,7 +1593,8 @@ A domain test that needs `Test.createTestingModule` to pass is usually a sign bu
 - **Emitting/subscribing to events by `event.constructor.name`.** Not guaranteed stable under minification, and won't type-check against a `DomainEvent[]` under `strict: true`. Use a static `eventName` on the event class instead.
 - **A repository finder that ignores its own filter parameter.** If `findConfirmedForVoyage(voyageNumber)` doesn't actually filter on `voyageNumber` in both the ORM entity and the query, it's a silent correctness bug waiting for production data volume to expose it.
 - **An ORM column with no backing field on the aggregate.** If `save()` needs a read-before-write (or any other side-channel) just to avoid losing a column's value, that's a sign the column represents domain state that belongs on the aggregate, not persistence-only metadata. Add the field to the aggregate — as `Booking._voyageNumber` shows — instead of patching around its absence in the repository.
-- **`as` casting a persisted string into a domain enum.** Skips validation exactly where untrusted data re-enters the domain. Parse explicitly and throw on an unrecognized value.
+- **Using a TS `enum` for a closed set.** Prefer an `as const` object + type union (see [Value objects](#value-objects)) — `enum` is non-erasable and breaks under `isolatedModules` / `erasableSyntaxOnly`.
+- **`as` casting a persisted string into a domain union set.** Skips validation exactly where untrusted data re-enters the domain. Parse explicitly and throw on an unrecognized value.
 - **Holding a composite's children in a `jsonb` blob by default.** Children with identity, lifecycle, or queryable fields belong in a child table (`@OneToMany`/`@ManyToOne`). JSONB isn't queryable or indexable per child and hides the aggregate's shape; reserve it for a genuinely value-object-shaped single detail, like `Booking`'s one `Cargo`.
 - **Two-way `forwardRef()`-free circular module imports.** Two modules importing each other directly (for a bidirectional ACL or otherwise) fails at bootstrap without `forwardRef()` on both sides.
 - **A module importing another module's `TypeOrmModule.forFeature([...])` or repository token directly** instead of going through its facade. Exactly what the ACL exists to prevent.
@@ -1575,15 +1614,15 @@ A domain test that needs `Test.createTestingModule` to pass is usually a sign bu
 | Composite aggregate collection | Root owns a collection of children with identity/behavior, builds them via create-methods (`addContainer` with dedup), derives whole-state (`isReadyForLoading()`, `confirm()`) from the children — see `design-patterns-arch-patterns.md`; persisted as a parent + child table (`@OneToMany`/`@ManyToOne`), not a `jsonb` blob |
 | Value Object | Plain class, `private readonly`/`readonly` fields, validated in constructor, `equals()` |
 | Typed identifier | Plain class wrapping the raw value, validated in constructor — applied to every identifier, including internal-entity ids |
-| Domain Event | Plain class in `domain/model/events/` implementing `DomainEvent`, with a static `eventName`, payload fields typed as VOs (never bare strings for identifiers), published via `EventEmitter2` after the unit of work commits — never subscribed to from another bounded context's module |
-| Event handler | `@Injectable()` with `@OnEvent(EventClass.eventName)` in `application/internal/eventhandlers/` |
-| Command / Query | Plain class in `domain/model/commands` or `queries`, validated in constructor |
+| Domain Event | Plain class in `domain/model/events/` implementing `DomainEvent`, named `Target + PastAction` (`BookingConfirmed`; `Event` suffix only on collision), with a static `eventName`, payload fields typed as VOs (never bare strings for identifiers), published via `EventEmitter2` after the unit of work commits — never subscribed to from another bounded context's module |
+| Event handler | `@Injectable()` `<EventName>EventHandler` with `@OnEvent(EventClass.eventName)` in `application/internal/eventhandlers/` |
+| Command / Query | Plain class in `domain/model/commands` or `queries`, validated in constructor, named `Action + Target + Command` / `Action + Target + Criteria + Query` (`PlaceBookingCommand`, `GetBookingByIdQuery`) |
 | Command/Query Service | Interface + token in `domain/services`, distinct method names per query (no TS interface overloads), impl in `application/internal/...` |
 | Repository (port) | Interface + `Symbol` token in `domain/repositories/`, finders backed by real, filterable columns |
 | Repository (adapter) | `@Injectable()` class in `infrastructure/persistence/typeorm/adapters/`, injects `Repository<OrmEntity>` via `@InjectRepository()` |
 | Unit of work | `IUnitOfWork` port + `UNIT_OF_WORK` token in `shared/domain/repositories/`, `TypeOrmUnitOfWork` in `infrastructure/.../repositories/`; writes run inside `unitOfWork.run()`, events publish after it resolves |
 | ORM entity | `@Entity()` class in `infrastructure/persistence/typeorm/entities/`, persistence shape only |
-| Assembler | Class in `infrastructure/persistence/typeorm/assemblers/`, orm-entity ⇄ domain aggregate, enum fields parsed via `parseX()`, never `as`-cast |
+| Assembler | Class in `infrastructure/persistence/typeorm/assemblers/`, orm-entity ⇄ domain aggregate, union-set fields parsed via `parseX()`, never `as`-cast |
 | Anti-corruption layer | Facade interface + token (`interfaces/acl`), signature in primitives — the *provider's* language, never the consumer's VOs; the consumer's `External{Bc}Service` (`outboundservices/acl/`) is the only place that translates into its own VOs; bidirectional ACL needs `forwardRef()` on both module imports |
 | Outbound service (tech port) | Interface + token in `outboundservices/{concept}/`, adapter in `infrastructure/{tech}/{impl}/` |
 | Marker interface (Spring concept) | **Not needed** — Nest always resolves by token, never by type, so there's no ambiguity to disambiguate |

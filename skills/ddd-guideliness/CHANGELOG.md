@@ -4,6 +4,19 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.7] — 2026-09-10
+
+### Added
+
+- `tactical-patterns.md`: New "Naming commands, queries, events (and handlers)" rule under CQRS — `Action + Target + Command`, `Action + Target + Criteria + Query`, `Target + PastAction` (`Event` suffix only on collision), handlers as `<EventName>EventHandler`.
+- `nestjs.md`: New `CancelBookingCommand` example; `Commands and queries` and `Domain events` sections now state the naming rule with file-name mirrors.
+
+### Changed
+
+- `nestjs.md`: Closed sets (`WeightUnit`, `BookingStatus`, `CargoStatus`, `ShipmentStatus`) now use `as const` object + type union instead of `export enum` — the TS equivalent of Spring's `enum`, safe under `isolatedModules` / `erasableSyntaxOnly`. Parsers use `Object.values()` guards; `@IsEnum` replaced with `@IsIn(Object.values(...))`; added `parseShipmentStatus()` / `parseCargoStatus()`.
+- `nestjs.md`: `GetBookingQuery` renamed to `GetBookingByIdQuery` (`get-booking-by-id.query.ts`); `BookingConfirmedHandler` renamed to `BookingConfirmedEventHandler` (`booking-confirmed.event-handler.ts`).
+- `SKILL.md`: Version bumped to `1.0.7`.
+
 ## [1.0.6] — 2026-09-02
 
 ### Added
