@@ -844,21 +844,21 @@ export const BOOKING_COMMAND_SERVICE = Symbol('BOOKING_COMMAND_SERVICE');
 
 export interface BookingCommandService {
   handle(command: PlaceBookingCommand): Promise<BookingNumber>;
-  handleCancel(bookingNumber: BookingNumber, reason: string): Promise<void>;
+  handle(command: CancelBookingCommand): Promise<void>;
 }
 ```
 
-### Name query handlers after what they return
+### Overloaded handle (one name, like Spring)
 
-TypeScript interface overloads force the implementing class to repeat every signature and aren't clearer than distinct names. Name each handler after what it returns:
+Both services expose only `handle`, overloaded per command/query — the same contract as `spring-boot.md`. The implementing class repeats every overload signature, then provides a single implementation signature with narrowing. That repetition is the accepted cost of the uniform contract: callers only ever see the precise overloads, never the union implementation signature.
 
 ```typescript
 // domain/services/booking-query.service.ts
 export const BOOKING_QUERY_SERVICE = Symbol('BOOKING_QUERY_SERVICE');
 
 export interface BookingQueryService {
-  getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null>;
-  findForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
+  handle(query: GetBookingByIdQuery): Promise<Booking | null>;
+  handle(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
 }
 ```
 
@@ -874,7 +874,20 @@ export class BookingCommandServiceImpl implements BookingCommandService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async handle(command: PlaceBookingCommand): Promise<BookingNumber> {
+  async handle(command: PlaceBookingCommand): Promise<BookingNumber>;
+  async handle(command: CancelBookingCommand): Promise<void>;
+  async handle(command: PlaceBookingCommand | CancelBookingCommand): Promise<BookingNumber | void> {
+    if (command instanceof CancelBookingCommand) {
+      const booking = await this.unitOfWork.run(async () => {
+        const b = await this.bookings.findByBookingNumber(command.bookingNumber);
+        if (!b) throw new BookingNotFoundError(command.bookingNumber);
+        b.cancel(command.reason);
+        await this.bookings.save(b);
+        return b;
+      });
+      this.publishDomainEvents(booking);
+      return;
+    }
     // The whole write runs inside one transaction, so the save and (later) the
     // event publish are tied to a single commit — the same guarantee Spring's
     // @Transactional + AbstractAggregateRoot gives you for free.
@@ -891,17 +904,6 @@ export class BookingCommandServiceImpl implements BookingCommandService {
     // run() resolves only after commit, so this truly is "publish after commit".
     this.publishDomainEvents(booking);
     return booking.bookingNumber;
-  }
-
-  async handleCancel(bookingNumber: BookingNumber, reason: string): Promise<void> {
-    const booking = await this.unitOfWork.run(async () => {
-      const b = await this.bookings.findByBookingNumber(bookingNumber);
-      if (!b) throw new BookingNotFoundError(bookingNumber);
-      b.cancel(reason);
-      await this.bookings.save(b);
-      return b;
-    });
-    this.publishDomainEvents(booking);
   }
 
   private publishDomainEvents(booking: Booking): void {
@@ -922,12 +924,13 @@ export class BookingCommandServiceImpl implements BookingCommandService {
 export class BookingQueryServiceImpl implements BookingQueryService {
   constructor(@Inject(BOOKING_REPOSITORY) private readonly bookings: BookingRepository) {}
 
-  async getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null> {
+  async handle(query: GetBookingByIdQuery): Promise<Booking | null>;
+  async handle(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
+  async handle(query: GetBookingByIdQuery | FindBookingsForVoyageQuery): Promise<Booking | null | Booking[]> {
+    if (query instanceof FindBookingsForVoyageQuery) {
+      return this.bookings.findConfirmedForVoyage(query.voyageNumber);
+    }
     return this.bookings.findByBookingNumber(query.bookingNumber);
-  }
-
-  async findForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]> {
-    return this.bookings.findConfirmedForVoyage(query.voyageNumber);
   }
 }
 ```
@@ -1458,14 +1461,14 @@ export class BookingController {
   async placeBooking(@Body() resource: PlaceBookingResource): Promise<BookingResource> {
     const command = PlaceBookingCommandFromResourceAssembler.toCommand(resource);
     const bookingNumber = await this.commands.handle(command);
-    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(bookingNumber));
+    const booking = await this.queries.handle(new GetBookingByIdQuery(bookingNumber));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
 
   @Get(':number')
   async getBooking(@Param('number') number: string): Promise<BookingResource> {
-    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(BookingNumber.of(number)));
+    const booking = await this.queries.handle(new GetBookingByIdQuery(BookingNumber.of(number)));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
@@ -1566,7 +1569,7 @@ If a project already commits to it — often because it also wants Event Sourcin
 | This reference | `@nestjs/cqrs` |
 |---|---|
 | `BookingCommandService.handle(command)` (explicit interface + token) | `CommandBus.execute(command)` + `@CommandHandler(PlaceBookingCommand)` |
-| `BookingQueryService.getByBookingNumber(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingByIdQuery)` |
+| `BookingQueryService.handle(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingByIdQuery)` |
 | `booking.pullDomainEvents()` + manual `EventEmitter2.emit()` after the unit of work commits | `Booking extends AggregateRoot`, `this.apply(event)`, `publisher.mergeObjectContext(booking)`, `booking.commit()` |
 | `@OnEvent(BookingConfirmed.eventName)` | `@EventsHandler(BookingConfirmed)` implementing `IEventHandler` |
 
@@ -1617,7 +1620,7 @@ A domain test that needs `Test.createTestingModule` to pass is usually a sign bu
 | Domain Event | Plain class in `domain/model/events/` implementing `DomainEvent`, named `Target + PastAction` (`BookingConfirmed`; `Event` suffix only on collision), with a static `eventName`, payload fields typed as VOs (never bare strings for identifiers), published via `EventEmitter2` after the unit of work commits — never subscribed to from another bounded context's module |
 | Event handler | `@Injectable()` `<EventName>EventHandler` with `@OnEvent(EventClass.eventName)` in `application/internal/eventhandlers/` |
 | Command / Query | Plain class in `domain/model/commands` or `queries`, validated in constructor, named `Action + Target + Command` / `Action + Target + Criteria + Query` (`PlaceBookingCommand`, `GetBookingByIdQuery`) |
-| Command/Query Service | Interface + token in `domain/services`, distinct method names per query (no TS interface overloads), impl in `application/internal/...` |
+| Command/Query Service | Interface + token in `domain/services`, overloaded `handle` per command/query (Spring-style), impl in `application/internal/...` |
 | Repository (port) | Interface + `Symbol` token in `domain/repositories/`, finders backed by real, filterable columns |
 | Repository (adapter) | `@Injectable()` class in `infrastructure/persistence/typeorm/adapters/`, injects `Repository<OrmEntity>` via `@InjectRepository()` |
 | Unit of work | `IUnitOfWork` port + `UNIT_OF_WORK` token in `shared/domain/repositories/`, `TypeOrmUnitOfWork` in `infrastructure/.../repositories/`; writes run inside `unitOfWork.run()`, events publish after it resolves |

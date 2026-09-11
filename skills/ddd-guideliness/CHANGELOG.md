@@ -4,6 +4,13 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.8] — 2026-09-11
+
+### Changed
+
+- `nestjs.md`: Command and query services now expose only overloaded `handle` (Spring-style) — `BookingCommandService` handles `PlaceBookingCommand` / `CancelBookingCommand`, `BookingQueryService` handles `GetBookingByIdQuery` / `FindBookingsForVoyageQuery` with narrowing implementations. Removed `handleCancel` primitives and `getByBookingNumber` / `findForVoyage` names; controller, `@nestjs/cqrs` mapping table, and quick reference updated accordingly.
+- `SKILL.md`: Version bumped to `1.0.8`.
+
 ## [1.0.7] — 2026-09-10
 
 ### Added
