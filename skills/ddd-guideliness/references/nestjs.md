@@ -1054,8 +1054,11 @@ export class BookingRepositoryImpl implements BookingRepository {
   // Reads that must be transactionally consistent with a write run inside the
   // use-case should use the ambient manager; outside a transaction the injected
   // repository is fine. This getter keeps the adapter behind the port.
+  // TransactionContext.current is an EntityManager, not a Repository, so
+  // translate it via getRepository() to stay type-safe under strict: true.
   private get repo(): Repository<BookingOrmEntity> {
-    return TransactionContext.current ?? this.orm;
+    const manager = TransactionContext.current;
+    return manager ? manager.getRepository(BookingOrmEntity) : this.orm;
   }
 
   async findByBookingNumber(bookingNumber: BookingNumber): Promise<Booking | null> {

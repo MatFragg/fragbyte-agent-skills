@@ -4,6 +4,12 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.9] — 2026-09-13
+
+### Fixed
+
+- `nestjs.md`: `BookingRepositoryImpl` getter now translates the ambient `EntityManager` via `manager.getRepository(BookingOrmEntity)` instead of returning `TransactionContext.current ?? this.orm` directly — the old form is `EntityManager | Repository | null` vs `Repository` and fails under `strict: true` (TS2322).
+
 ## [1.0.8] — 2026-09-11
 
 ### Changed
