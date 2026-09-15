@@ -4,6 +4,13 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.10] — 2026-09-15
+
+### Changed
+
+- `nestjs.md`: Command and query services now use one named method per case (`placeBooking` / `cancelBooking`, `getByBookingNumber` / `findForVoyage`, each taking its command/query object) instead of overloaded `handle`. TypeScript has no runtime overloading, so a single `handle` forced a `CommandA | CommandB` union plus an `instanceof` chain — ambiguous for codegen and inconsistent at scale. `spring-boot.md` keeps native overloaded `handle`; controller, trade-off note, `@nestjs/cqrs` mapping table, and quick reference updated accordingly.
+- `SKILL.md`: Version bumped to `1.0.10`.
+
 ## [1.0.9] — 2026-09-13
 
 ### Fixed
