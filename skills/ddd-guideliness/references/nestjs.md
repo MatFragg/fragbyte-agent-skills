@@ -1423,7 +1423,7 @@ export class BookingResource {
 ```typescript
 // interfaces/rest/transform/place-booking-command-from-resource.assembler.ts
 export class PlaceBookingCommandFromResourceAssembler {
-  static toCommand(resource: PlaceBookingResource): PlaceBookingCommand {
+  static toCommandFromResource(resource: PlaceBookingResource): PlaceBookingCommand {
     return new PlaceBookingCommand(
       CustomerId.of(resource.customerId),
       PortCode.of(resource.origin),
@@ -1437,7 +1437,7 @@ export class PlaceBookingCommandFromResourceAssembler {
 
 // interfaces/rest/transform/booking-resource-from-entity.assembler.ts
 export class BookingResourceFromEntityAssembler {
-  static toResource(booking: Booking): BookingResource {
+  static toResourceFromEntity(booking: Booking): BookingResource {
     return new BookingResource(booking.bookingNumber.value, booking.status, booking.origin.value, booking.destination.value);
   }
 }
@@ -1459,18 +1459,18 @@ export class BookingController {
 
   @Post()
   async placeBooking(@Body() resource: PlaceBookingResource): Promise<BookingResource> {
-    const command = PlaceBookingCommandFromResourceAssembler.toCommand(resource);
+    const command = PlaceBookingCommandFromResourceAssembler.toCommandFromResource(resource);
     const bookingNumber = await this.commands.placeBooking(command);
     const booking = await this.queries.getBookingById(new GetBookingByIdQuery(bookingNumber));
     if (!booking) throw new NotFoundException();
-    return BookingResourceFromEntityAssembler.toResource(booking);
+    return BookingResourceFromEntityAssembler.toResourceFromEntity(booking);
   }
 
   @Get(':number')
   async getBooking(@Param('number') number: string): Promise<BookingResource> {
     const booking = await this.queries.getBookingById(new GetBookingByIdQuery(BookingNumber.of(number)));
     if (!booking) throw new NotFoundException();
-    return BookingResourceFromEntityAssembler.toResource(booking);
+    return BookingResourceFromEntityAssembler.toResourceFromEntity(booking);
   }
 }
 ```

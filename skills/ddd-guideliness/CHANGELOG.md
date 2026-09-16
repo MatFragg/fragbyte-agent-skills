@@ -4,6 +4,13 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.12] — 2026-09-16
+
+### Changed
+
+- `nestjs.md` / `spring-boot.md`: Interface assemblers now use directional names (`toCommandFromResource` / `toResourceFromEntity`) instead of generic `toCommand` / `toResource`, matching the class names and the existing `angular.md` convention (`toEntityFromResource` / `toResourceFromEntity`). Definitions and controller call sites updated.
+- `SKILL.md`: Version bumped to `1.0.12`.
+
 ## [1.0.11] — 2026-09-16
 
 ### Changed

@@ -810,7 +810,7 @@ public record BookingResource(
 ```java
 // interfaces/rest/transform
 public class PlaceBookingCommandFromResourceAssembler {
-    public static PlaceBookingCommand toCommand(PlaceBookingResource resource) {
+    public static PlaceBookingCommand toCommandFromResource(PlaceBookingResource resource) {
         return new PlaceBookingCommand(
             new CustomerId(resource.customerId()),
             new PortCode(resource.origin()),
@@ -833,18 +833,18 @@ class BookingsController {
 
     @PostMapping
     ResponseEntity<BookingResource> placeBooking(@RequestBody PlaceBookingResource resource) {
-        var command = PlaceBookingCommandFromResourceAssembler.toCommand(resource);
+        var command = PlaceBookingCommandFromResourceAssembler.toCommandFromResource(resource);
         var bookingNumber = commands.handle(command);
         return queries.handle(new GetBookingQuery(bookingNumber))
             .map(b -> ResponseEntity.created(URI.create("/api/v1/bookings/" + b.getBookingNumber().value()))
-                   .body(BookingResourceFromEntityAssembler.toResource(b)))
+                    .body(BookingResourceFromEntityAssembler.toResourceFromEntity(b)))
             .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     @GetMapping("/{number}")
     ResponseEntity<BookingResource> getBooking(@PathVariable String number) {
         return queries.handle(new GetBookingQuery(new BookingNumber(number)))
-            .map(b -> ResponseEntity.ok(BookingResourceFromEntityAssembler.toResource(b)))
+            .map(b -> ResponseEntity.ok(BookingResourceFromEntityAssembler.toResourceFromEntity(b)))
             .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
