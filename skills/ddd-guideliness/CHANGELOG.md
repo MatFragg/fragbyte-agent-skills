@@ -4,6 +4,13 @@ All notable changes to this skill are documented in this file.
 
 Format is based on [Keep a Changelog](https://keepachangelog.com/), and this skill adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.11] — 2026-09-16
+
+### Changed
+
+- `nestjs.md`: Service method names now derive from the command/query class (`lowerCamel` without the `Command`/`Query` suffix): `getByBookingNumber` → `getBookingById`, `findForVoyage` → `findBookingsForVoyage` (`placeBooking` / `cancelBooking` already complied). Interface, impl, controller, `@nestjs/cqrs` mapping table, and quick reference updated.
+- `SKILL.md`: Version bumped to `1.0.11`.
+
 ## [1.0.10] — 2026-09-15
 
 ### Changed

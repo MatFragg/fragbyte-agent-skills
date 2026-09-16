@@ -850,15 +850,15 @@ export interface BookingCommandService {
 
 ### Named methods (idiomatic TypeScript)
 
-Each service exposes one method per command/query, named in the ubiquitous language — unlike `spring-boot.md`, where Java overloads every case as `handle`. TypeScript has no runtime overloading (a single `handle` body would force a `CommandA | CommandB` union plus an `instanceof` chain), so distinct names keep every signature exact, every implementation separate, and codegen unambiguous. Each method takes its command/query object — never bare primitives.
+Each service exposes one method per command/query, derived from the class name — unlike `spring-boot.md`, where Java overloads every case as `handle`. TypeScript has no runtime overloading (a single `handle` body would force a `CommandA | CommandB` union plus an `instanceof` chain), so distinct names keep every signature exact, every implementation separate, and codegen unambiguous. Rule: `methodName = lowerCamel(ClassName without the Command|Query suffix)` — e.g. `PlaceBookingCommand → placeBooking(command: PlaceBookingCommand)`, `GetBookingByIdQuery → getBookingById(query: GetBookingByIdQuery)`. Each method takes its command/query object — never bare primitives.
 
 ```typescript
 // domain/services/booking-query.service.ts
 export const BOOKING_QUERY_SERVICE = Symbol('BOOKING_QUERY_SERVICE');
 
 export interface BookingQueryService {
-  getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null>;
-  findForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
+  getBookingById(query: GetBookingByIdQuery): Promise<Booking | null>;
+  findBookingsForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]>;
 }
 ```
 
@@ -922,11 +922,11 @@ export class BookingCommandServiceImpl implements BookingCommandService {
 export class BookingQueryServiceImpl implements BookingQueryService {
   constructor(@Inject(BOOKING_REPOSITORY) private readonly bookings: BookingRepository) {}
 
-  async getByBookingNumber(query: GetBookingByIdQuery): Promise<Booking | null> {
+  async getBookingById(query: GetBookingByIdQuery): Promise<Booking | null> {
     return this.bookings.findByBookingNumber(query.bookingNumber);
   }
 
-  async findForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]> {
+  async findBookingsForVoyage(query: FindBookingsForVoyageQuery): Promise<Booking[]> {
     return this.bookings.findConfirmedForVoyage(query.voyageNumber);
   }
 }
@@ -1461,14 +1461,14 @@ export class BookingController {
   async placeBooking(@Body() resource: PlaceBookingResource): Promise<BookingResource> {
     const command = PlaceBookingCommandFromResourceAssembler.toCommand(resource);
     const bookingNumber = await this.commands.placeBooking(command);
-    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(bookingNumber));
+    const booking = await this.queries.getBookingById(new GetBookingByIdQuery(bookingNumber));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
 
   @Get(':number')
   async getBooking(@Param('number') number: string): Promise<BookingResource> {
-    const booking = await this.queries.getByBookingNumber(new GetBookingByIdQuery(BookingNumber.of(number)));
+    const booking = await this.queries.getBookingById(new GetBookingByIdQuery(BookingNumber.of(number)));
     if (!booking) throw new NotFoundException();
     return BookingResourceFromEntityAssembler.toResource(booking);
   }
@@ -1569,7 +1569,7 @@ If a project already commits to it — often because it also wants Event Sourcin
 | This reference | `@nestjs/cqrs` |
 |---|---|
 | `BookingCommandService.placeBooking(command)` / `cancelBooking(command)` (explicit interface + token) | `CommandBus.execute(command)` + `@CommandHandler(PlaceBookingCommand)` |
-| `BookingQueryService.getByBookingNumber(query)` / `findForVoyage(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingByIdQuery)` |
+| `BookingQueryService.getBookingById(query)` / `findBookingsForVoyage(query)` | `QueryBus.execute(query)` + `@QueryHandler(GetBookingByIdQuery)` |
 | `booking.pullDomainEvents()` + manual `EventEmitter2.emit()` after the unit of work commits | `Booking extends AggregateRoot`, `this.apply(event)`, `publisher.mergeObjectContext(booking)`, `booking.commit()` |
 | `@OnEvent(BookingConfirmed.eventName)` | `@EventsHandler(BookingConfirmed)` implementing `IEventHandler` |
 
@@ -1620,7 +1620,7 @@ A domain test that needs `Test.createTestingModule` to pass is usually a sign bu
 | Domain Event | Plain class in `domain/model/events/` implementing `DomainEvent`, named `Target + PastAction` (`BookingConfirmed`; `Event` suffix only on collision), with a static `eventName`, payload fields typed as VOs (never bare strings for identifiers), published via `EventEmitter2` after the unit of work commits — never subscribed to from another bounded context's module |
 | Event handler | `@Injectable()` `<EventName>EventHandler` with `@OnEvent(EventClass.eventName)` in `application/internal/eventhandlers/` |
 | Command / Query | Plain class in `domain/model/commands` or `queries`, validated in constructor, named `Action + Target + Command` / `Action + Target + Criteria + Query` (`PlaceBookingCommand`, `GetBookingByIdQuery`) |
-| Command/Query Service | Interface + token in `domain/services`, one named method per command/query (`placeBooking`, `cancelBooking`, `getByBookingNumber`, `findForVoyage`), impl in `application/internal/...` |
+| Command/Query Service | Interface + token in `domain/services`, one method per command/query derived from the class name (`placeBooking`, `cancelBooking`, `getBookingById`, `findBookingsForVoyage`), impl in `application/internal/...` |
 | Repository (port) | Interface + `Symbol` token in `domain/repositories/`, finders backed by real, filterable columns |
 | Repository (adapter) | `@Injectable()` class in `infrastructure/persistence/typeorm/adapters/`, injects `Repository<OrmEntity>` via `@InjectRepository()` |
 | Unit of work | `IUnitOfWork` port + `UNIT_OF_WORK` token in `shared/domain/repositories/`, `TypeOrmUnitOfWork` in `infrastructure/.../repositories/`; writes run inside `unitOfWork.run()`, events publish after it resolves |
